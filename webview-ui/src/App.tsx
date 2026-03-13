@@ -140,11 +140,9 @@ function App() {
     workspaceFolders,
   } = useExtensionMessages(getOfficeState, editor.setLastSavedLayout, isEditDirty);
 
-  const [showMigrationNotice, setShowMigrationNotice] = useState(false);
   // Show migration notice once layout reset is detected
-  if (layoutWasReset && !showMigrationNotice) {
-    setShowMigrationNotice(true);
-  }
+  const [migrationNoticeDismissed, setMigrationNoticeDismissed] = useState(false);
+  const showMigrationNotice = layoutWasReset && !migrationNoticeDismissed;
 
   const [isDebugMode, setIsDebugMode] = useState(false);
 
@@ -364,7 +362,7 @@ function App() {
             justifyContent: 'center',
             zIndex: 100,
           }}
-          onClick={() => setShowMigrationNotice(false)}
+          onClick={() => setMigrationNoticeDismissed(true)}
         >
           <div
             style={{
@@ -408,7 +406,7 @@ function App() {
                 cursor: 'pointer',
                 boxShadow: 'var(--pixel-shadow)',
               }}
-              onClick={() => setShowMigrationNotice(false)}
+              onClick={() => setMigrationNoticeDismissed(true)}
             >
               Got it
             </button>

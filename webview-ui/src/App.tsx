@@ -251,7 +251,7 @@ function App() {
         panRef={editor.panRef}
       />
 
-      <ZoomControls zoom={editor.zoom} onZoomChange={editor.handleZoomChange} />
+      {!isDebugMode && <ZoomControls zoom={editor.zoom} onZoomChange={editor.handleZoomChange} />}
 
       {/* Vignette overlay */}
       <div
@@ -281,9 +281,9 @@ function App() {
         <div
           style={{
             position: 'absolute',
-            top: 8,
+            top: editor.isDirty ? 52 : 8,
             left: '50%',
-            transform: editor.isDirty ? 'translateX(calc(-50% + 100px))' : 'translateX(-50%)',
+            transform: 'translateX(-50%)',
             zIndex: 49,
             background: 'var(--pixel-hint-bg)',
             color: '#fff',
@@ -296,7 +296,7 @@ function App() {
             whiteSpace: 'nowrap',
           }}
         >
-          Press <b>R</b> to rotate
+          Rotate (R)
         </div>
       )}
 
@@ -329,16 +329,18 @@ function App() {
           );
         })()}
 
-      <ToolOverlay
-        officeState={officeState}
-        agents={agents}
-        agentTools={agentTools}
-        subagentCharacters={subagentCharacters}
-        containerRef={containerRef}
-        zoom={editor.zoom}
-        panRef={editor.panRef}
-        onCloseAgent={handleCloseAgent}
-      />
+      {!isDebugMode && (
+        <ToolOverlay
+          officeState={officeState}
+          agents={agents}
+          agentTools={agentTools}
+          subagentCharacters={subagentCharacters}
+          containerRef={containerRef}
+          zoom={editor.zoom}
+          panRef={editor.panRef}
+          onCloseAgent={handleCloseAgent}
+        />
+      )}
 
       {isDebugMode && (
         <DebugView

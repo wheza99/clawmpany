@@ -1,7 +1,7 @@
 {
-  "id": "NEW_ASSET",
-  "name": "New Asset",
-  "category": "misc",
+  "id": "LARGE_PLANT",
+  "name": "Large Plant",
+  "category": "decor",
   "type": "asset",
   "canPlaceOnWalls": false,
   "canPlaceOnSurfaces": false,

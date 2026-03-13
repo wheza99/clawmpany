@@ -1,77 +1,48 @@
-import { adjustSprite } from '../colorize.js'
-import type { Direction, FloorColor, SpriteData } from '../types.js'
-import { Direction as Dir } from '../types.js'
-
-const _ = '' // transparent
+import { adjustSprite } from '../colorize.js';
+import type { Direction, FloorColor, SpriteData } from '../types.js';
+import { Direction as Dir } from '../types.js';
+import bubblePermissionData from './bubble-permission.json';
+import bubbleWaitingData from './bubble-waiting.json';
 
 // ── Speech Bubble Sprites ───────────────────────────────────────
 
+interface BubbleSpriteJson {
+  palette: Record<string, string>;
+  pixels: string[][];
+}
+
+function resolveBubbleSprite(data: BubbleSpriteJson): SpriteData {
+  return data.pixels.map((row) => row.map((key) => data.palette[key] ?? key));
+}
+
 /** Permission bubble: white square with "..." in amber, and a tail pointer (11x13) */
-export const BUBBLE_PERMISSION_SPRITE: SpriteData = (() => {
-  const B = '#555566' // border
-  const F = '#EEEEFF' // fill
-  const A = '#CCA700' // amber dots
-  return [
-    [B, B, B, B, B, B, B, B, B, B, B],
-    [B, F, F, F, F, F, F, F, F, F, B],
-    [B, F, F, F, F, F, F, F, F, F, B],
-    [B, F, F, F, F, F, F, F, F, F, B],
-    [B, F, F, F, F, F, F, F, F, F, B],
-    [B, F, F, A, F, A, F, A, F, F, B],
-    [B, F, F, F, F, F, F, F, F, F, B],
-    [B, F, F, F, F, F, F, F, F, F, B],
-    [B, F, F, F, F, F, F, F, F, F, B],
-    [B, B, B, B, B, B, B, B, B, B, B],
-    [_, _, _, _, B, B, B, _, _, _, _],
-    [_, _, _, _, _, B, _, _, _, _, _],
-    [_, _, _, _, _, _, _, _, _, _, _],
-  ]
-})()
+export const BUBBLE_PERMISSION_SPRITE: SpriteData = resolveBubbleSprite(bubblePermissionData);
 
 /** Waiting bubble: white square with green checkmark, and a tail pointer (11x13) */
-export const BUBBLE_WAITING_SPRITE: SpriteData = (() => {
-  const B = '#555566' // border
-  const F = '#EEEEFF' // fill
-  const G = '#44BB66' // green check
-  return [
-    [_, B, B, B, B, B, B, B, B, B, _],
-    [B, F, F, F, F, F, F, F, F, F, B],
-    [B, F, F, F, F, F, F, F, F, F, B],
-    [B, F, F, F, F, F, F, F, G, F, B],
-    [B, F, F, F, F, F, F, G, F, F, B],
-    [B, F, F, G, F, F, G, F, F, F, B],
-    [B, F, F, F, G, G, F, F, F, F, B],
-    [B, F, F, F, F, F, F, F, F, F, B],
-    [B, F, F, F, F, F, F, F, F, F, B],
-    [_, B, B, B, B, B, B, B, B, B, _],
-    [_, _, _, _, B, B, B, _, _, _, _],
-    [_, _, _, _, _, B, _, _, _, _, _],
-    [_, _, _, _, _, _, _, _, _, _, _],
-  ]
-})()
+export const BUBBLE_WAITING_SPRITE: SpriteData = resolveBubbleSprite(bubbleWaitingData);
 
 // ════════════════════════════════════════════════════════════════
 // Loaded character sprites (from PNG assets)
 // ════════════════════════════════════════════════════════════════
 
 interface LoadedCharacterData {
-  down: SpriteData[]
-  up: SpriteData[]
-  right: SpriteData[]
+  down: SpriteData[];
+  up: SpriteData[];
+  right: SpriteData[];
 }
 
-let loadedCharacters: LoadedCharacterData[] | null = null
+let loadedCharacters: LoadedCharacterData[] | null = null;
 
 /** Set pre-colored character sprites loaded from PNG assets. Call this when characterSpritesLoaded message arrives. */
 export function setCharacterTemplates(data: LoadedCharacterData[]): void {
-  loadedCharacters = data
+  loadedCharacters = data;
   // Clear cache so sprites are rebuilt from loaded data
-  spriteCache.clear()
+  spriteCache.clear();
 }
 
 /** Flip a SpriteData horizontally (for generating left sprites from right) */
 export function flipSpriteHorizontal(sprite: SpriteData): SpriteData {
-  return sprite.map((row) => [...row].reverse())
+  return sprite.map((row) => [...row].reverse());
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -79,21 +50,29 @@ export function flipSpriteHorizontal(sprite: SpriteData): SpriteData {
 // ════════════════════════════════════════════════════════════════
 
 export interface CharacterSprites {
-  walk: Record<Direction, [SpriteData, SpriteData, SpriteData, SpriteData]>
-  typing: Record<Direction, [SpriteData, SpriteData]>
-  reading: Record<Direction, [SpriteData, SpriteData]>
+  walk: Record<Direction, [SpriteData, SpriteData, SpriteData, SpriteData]>;
+  typing: Record<Direction, [SpriteData, SpriteData]>;
+  reading: Record<Direction, [SpriteData, SpriteData]>;
 }
 
-const spriteCache = new Map<string, CharacterSprites>()
+const spriteCache = new Map<string, CharacterSprites>();
 
 /** Apply hue shift to every sprite in a CharacterSprites set */
 function hueShiftSprites(sprites: CharacterSprites, hueShift: number): CharacterSprites {
-  const color: FloorColor = { h: hueShift, s: 0, b: 0, c: 0 }
-  const shift = (s: SpriteData) => adjustSprite(s, color)
-  const shiftWalk = (arr: [SpriteData, SpriteData, SpriteData, SpriteData]): [SpriteData, SpriteData, SpriteData, SpriteData] =>
-    [shift(arr[0]), shift(arr[1]), shift(arr[2]), shift(arr[3])]
-  const shiftPair = (arr: [SpriteData, SpriteData]): [SpriteData, SpriteData] =>
-    [shift(arr[0]), shift(arr[1])]
+  const color: FloorColor = { h: hueShift, s: 0, b: 0, c: 0 };
+  const shift = (s: SpriteData) => adjustSprite(s, color);
+  const shiftWalk = (
+    arr: [SpriteData, SpriteData, SpriteData, SpriteData],
+  ): [SpriteData, SpriteData, SpriteData, SpriteData] => [
+    shift(arr[0]),
+    shift(arr[1]),
+    shift(arr[2]),
+    shift(arr[3]),
+  ];
+  const shiftPair = (arr: [SpriteData, SpriteData]): [SpriteData, SpriteData] => [
+    shift(arr[0]),
+    shift(arr[1]),
+  ];
   return {
     walk: {
       [Dir.DOWN]: shiftWalk(sprites.walk[Dir.DOWN]),
@@ -113,32 +92,32 @@ function hueShiftSprites(sprites: CharacterSprites, hueShift: number): Character
       [Dir.RIGHT]: shiftPair(sprites.reading[Dir.RIGHT]),
       [Dir.LEFT]: shiftPair(sprites.reading[Dir.LEFT]),
     } as Record<Direction, [SpriteData, SpriteData]>,
-  }
+  };
 }
 
 /** Create a transparent placeholder sprite of given dimensions */
 function emptySprite(w: number, h: number): SpriteData {
-  const rows: string[][] = []
+  const rows: string[][] = [];
   for (let y = 0; y < h; y++) {
-    rows.push(new Array(w).fill(''))
+    rows.push(new Array(w).fill(''));
   }
-  return rows
+  return rows;
 }
 
 export function getCharacterSprites(paletteIndex: number, hueShift = 0): CharacterSprites {
-  const cacheKey = `${paletteIndex}:${hueShift}`
-  const cached = spriteCache.get(cacheKey)
-  if (cached) return cached
+  const cacheKey = `${paletteIndex}:${hueShift}`;
+  const cached = spriteCache.get(cacheKey);
+  if (cached) return cached;
 
-  let sprites: CharacterSprites
+  let sprites: CharacterSprites;
 
   if (loadedCharacters) {
     // Use pre-colored character sprites directly (no palette swapping)
-    const char = loadedCharacters[paletteIndex % loadedCharacters.length]
-    const d = char.down
-    const u = char.up
-    const rt = char.right
-    const flip = flipSpriteHorizontal
+    const char = loadedCharacters[paletteIndex % loadedCharacters.length];
+    const d = char.down;
+    const u = char.up;
+    const rt = char.right;
+    const flip = flipSpriteHorizontal;
 
     sprites = {
       walk: {
@@ -159,12 +138,12 @@ export function getCharacterSprites(paletteIndex: number, hueShift = 0): Charact
         [Dir.RIGHT]: [rt[5], rt[6]],
         [Dir.LEFT]: [flip(rt[5]), flip(rt[6])],
       },
-    }
+    };
   } else {
     // Fallback: return transparent placeholder sprites (16×32)
-    const e = emptySprite(16, 32)
-    const walkSet: [SpriteData, SpriteData, SpriteData, SpriteData] = [e, e, e, e]
-    const pairSet: [SpriteData, SpriteData] = [e, e]
+    const e = emptySprite(16, 32);
+    const walkSet: [SpriteData, SpriteData, SpriteData, SpriteData] = [e, e, e, e];
+    const pairSet: [SpriteData, SpriteData] = [e, e];
     sprites = {
       walk: {
         [Dir.DOWN]: walkSet,
@@ -184,14 +163,14 @@ export function getCharacterSprites(paletteIndex: number, hueShift = 0): Charact
         [Dir.RIGHT]: pairSet,
         [Dir.LEFT]: pairSet,
       },
-    }
+    };
   }
 
   // Apply hue shift if non-zero
   if (hueShift !== 0) {
-    sprites = hueShiftSprites(sprites, hueShift)
+    sprites = hueShiftSprites(sprites, hueShift);
   }
 
-  spriteCache.set(cacheKey, sprites)
-  return sprites
+  spriteCache.set(cacheKey, sprites);
+  return sprites;
 }

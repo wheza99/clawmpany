@@ -1,7 +1,8 @@
 import { useState } from 'react';
 
-import { isSoundEnabled, setSoundEnabled } from '../notificationSound.js';
-import { isStandalone, vscode } from '../vscodeApi.js';
+// TODO: Re-enable when settings are restored
+// import { isSoundEnabled, setSoundEnabled } from '../notificationSound.js';
+// import { isStandalone, vscode } from '../vscodeApi.js';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -28,13 +29,18 @@ const menuItemBase: React.CSSProperties = {
 export function SettingsModal({
   isOpen,
   onClose,
-  isDebugMode,
-  onToggleDebugMode,
+  isDebugMode: _isDebugMode,
+  onToggleDebugMode: _onToggleDebugMode,
 }: SettingsModalProps) {
   const [hovered, setHovered] = useState<string | null>(null);
-  const [soundLocal, setSoundLocal] = useState(isSoundEnabled);
 
   if (!isOpen) return null;
+
+  const handleLogout = () => {
+    // TODO: Implement logout logic
+    console.log('Logout clicked');
+    onClose();
+  };
 
   return (
     <>
@@ -99,6 +105,19 @@ export function SettingsModal({
         </div>
         {/* Menu items */}
         <button
+          onClick={handleLogout}
+          onMouseEnter={() => setHovered('logout')}
+          onMouseLeave={() => setHovered(null)}
+          style={{
+            ...menuItemBase,
+            background: hovered === 'logout' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
+          }}
+        >
+          Logout
+        </button>
+
+        {/* TODO: Re-enable these settings later */}
+        {/* <button
           onClick={() => {
             if (!isStandalone) {
               vscode.postMessage({ type: 'openSessionsFolder' });
@@ -203,7 +222,7 @@ export function SettingsModal({
               }}
             />
           )}
-        </button>
+        </button> */}
       </div>
     </>
   );

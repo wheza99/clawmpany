@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import type { WorkspaceFolder } from '../hooks/useExtensionMessages.js';
-import { isStandalone, vscode } from '../vscodeApi.js';
+import { ServersModal } from './ServersModal.js';
 import { SettingsModal } from './SettingsModal.js';
 
 interface BottomToolbarProps {
@@ -45,69 +45,71 @@ const btnActive: React.CSSProperties = {
 };
 
 export function BottomToolbar({
-  isEditMode,
-  onOpenClaude,
-  onToggleEditMode,
+  isEditMode: _isEditMode,
+  onOpenClaude: _onOpenClaude,
+  onToggleEditMode: _onToggleEditMode,
   isDebugMode,
   onToggleDebugMode,
-  workspaceFolders,
+  workspaceFolders: _workspaceFolders,
 }: BottomToolbarProps) {
   const [hovered, setHovered] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isFolderPickerOpen, setIsFolderPickerOpen] = useState(false);
-  const [hoveredFolder, setHoveredFolder] = useState<number | null>(null);
-  const folderPickerRef = useRef<HTMLDivElement>(null);
+  const [isServersDropdownOpen, setIsServersDropdownOpen] = useState(false);
+  const [isCreateServerOpen, setIsCreateServerOpen] = useState(false);
+  const [hoveredServer, setHoveredServer] = useState<string | null>(null);
+  const serversDropdownRef = useRef<HTMLDivElement>(null);
 
-  // Close folder picker on outside click
+  // Mock servers data - TODO: replace with real data
+  const servers = [
+    { id: '1', name: 'Production Server', status: 'online' },
+    { id: '2', name: 'Development Server', status: 'offline' },
+  ];
+
+  // Close servers dropdown on outside click
   useEffect(() => {
-    if (!isFolderPickerOpen) return;
+    if (!isServersDropdownOpen) return;
     const handleClick = (e: MouseEvent) => {
-      if (folderPickerRef.current && !folderPickerRef.current.contains(e.target as Node)) {
-        setIsFolderPickerOpen(false);
+      if (serversDropdownRef.current && !serversDropdownRef.current.contains(e.target as Node)) {
+        setIsServersDropdownOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
-  }, [isFolderPickerOpen]);
+  }, [isServersDropdownOpen]);
 
-  const hasMultipleFolders = workspaceFolders.length > 1;
-
-  const handleAgentClick = () => {
-    if (hasMultipleFolders) {
-      setIsFolderPickerOpen((v) => !v);
-    } else {
-      onOpenClaude();
-    }
+  const handleSelectServer = (serverId: string) => {
+    // TODO: Implement server selection
+    console.log('Selected server:', serverId);
+    setIsServersDropdownOpen(false);
   };
 
-  const handleFolderSelect = (folder: WorkspaceFolder) => {
-    setIsFolderPickerOpen(false);
-    if (!isStandalone) {
-      vscode.postMessage({ type: 'openClaude', folderPath: folder.path });
-    }
+  const handleCreateServerClick = () => {
+    setIsServersDropdownOpen(false);
+    setIsCreateServerOpen(true);
   };
 
   return (
     <div style={panelStyle}>
-      <div ref={folderPickerRef} style={{ position: 'relative' }}>
+      {/* Servers dropdown */}
+      <div ref={serversDropdownRef} style={{ position: 'relative' }}>
         <button
-          onClick={handleAgentClick}
-          onMouseEnter={() => setHovered('agent')}
+          onClick={() => setIsServersDropdownOpen((v) => !v)}
+          onMouseEnter={() => setHovered('servers')}
           onMouseLeave={() => setHovered(null)}
           style={{
             ...btnBase,
             padding: '5px 12px',
             background:
-              hovered === 'agent' || isFolderPickerOpen
+              hovered === 'servers' || isServersDropdownOpen
                 ? 'var(--pixel-agent-hover-bg)'
                 : 'var(--pixel-agent-bg)',
             border: '2px solid var(--pixel-agent-border)',
             color: 'var(--pixel-agent-text)',
           }}
         >
-          + Agent
+          Servers
         </button>
-        {isFolderPickerOpen && (
+        {isServersDropdownOpen && (
           <div
             style={{
               position: 'absolute',
@@ -118,37 +120,77 @@ export function BottomToolbar({
               border: '2px solid var(--pixel-border)',
               borderRadius: 0,
               boxShadow: 'var(--pixel-shadow)',
-              minWidth: 160,
+              minWidth: 180,
               zIndex: 'var(--pixel-controls-z)',
             }}
           >
-            {workspaceFolders.map((folder, i) => (
+            {servers.map((server) => (
               <button
-                key={folder.path}
-                onClick={() => handleFolderSelect(folder)}
-                onMouseEnter={() => setHoveredFolder(i)}
-                onMouseLeave={() => setHoveredFolder(null)}
+                key={server.id}
+                onClick={() => handleSelectServer(server.id)}
+                onMouseEnter={() => setHoveredServer(server.id)}
+                onMouseLeave={() => setHoveredServer(null)}
                 style={{
-                  display: 'block',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
                   width: '100%',
                   textAlign: 'left',
                   padding: '6px 10px',
                   fontSize: '22px',
                   color: 'var(--pixel-text)',
-                  background: hoveredFolder === i ? 'var(--pixel-btn-hover-bg)' : 'transparent',
+                  background:
+                    hoveredServer === server.id ? 'var(--pixel-btn-hover-bg)' : 'transparent',
                   border: 'none',
                   borderRadius: 0,
                   cursor: 'pointer',
                   whiteSpace: 'nowrap',
                 }}
               >
-                {folder.name}
+                <span>{server.name}</span>
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    background: server.status === 'online' ? '#4ade80' : '#ef4444',
+                    flexShrink: 0,
+                    marginLeft: 8,
+                  }}
+                />
               </button>
             ))}
+            <div style={{ borderTop: '1px solid var(--pixel-border)' }}>
+              <button
+                onClick={handleCreateServerClick}
+                onMouseEnter={() => setHoveredServer('create')}
+                onMouseLeave={() => setHoveredServer(null)}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  textAlign: 'left',
+                  padding: '6px 10px',
+                  fontSize: '22px',
+                  color: 'var(--pixel-agent-text)',
+                  background:
+                    hoveredServer === 'create' ? 'rgba(90, 140, 255, 0.3)' : 'rgba(90, 140, 255, 0.2)',
+                  border: 'none',
+                  borderRadius: 0,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                + Create New Server
+              </button>
+            </div>
           </div>
         )}
       </div>
-      <button
+
+      {/* Create Server Dialog */}
+      <ServersModal isOpen={isCreateServerOpen} onClose={() => setIsCreateServerOpen(false)} />
+      {/* TODO: Re-enable layout editor later */}
+      {/* <button
         onClick={onToggleEditMode}
         onMouseEnter={() => setHovered('edit')}
         onMouseLeave={() => setHovered(null)}
@@ -163,7 +205,7 @@ export function BottomToolbar({
         title="Edit office layout"
       >
         Layout
-      </button>
+      </button> */}
       <div style={{ position: 'relative' }}>
         <button
           onClick={() => setIsSettingsOpen((v) => !v)}

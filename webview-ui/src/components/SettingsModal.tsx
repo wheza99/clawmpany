@@ -1,7 +1,7 @@
 import { useState } from 'react';
 
 import { isSoundEnabled, setSoundEnabled } from '../notificationSound.js';
-import { vscode } from '../vscodeApi.js';
+import { isStandalone, vscode } from '../vscodeApi.js';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -100,7 +100,9 @@ export function SettingsModal({
         {/* Menu items */}
         <button
           onClick={() => {
-            vscode.postMessage({ type: 'openSessionsFolder' });
+            if (!isStandalone) {
+              vscode.postMessage({ type: 'openSessionsFolder' });
+            }
             onClose();
           }}
           onMouseEnter={() => setHovered('sessions')}
@@ -114,7 +116,9 @@ export function SettingsModal({
         </button>
         <button
           onClick={() => {
-            vscode.postMessage({ type: 'exportLayout' });
+            if (!isStandalone) {
+              vscode.postMessage({ type: 'exportLayout' });
+            }
             onClose();
           }}
           onMouseEnter={() => setHovered('export')}
@@ -128,7 +132,9 @@ export function SettingsModal({
         </button>
         <button
           onClick={() => {
-            vscode.postMessage({ type: 'importLayout' });
+            if (!isStandalone) {
+              vscode.postMessage({ type: 'importLayout' });
+            }
             onClose();
           }}
           onMouseEnter={() => setHovered('import')}
@@ -145,7 +151,9 @@ export function SettingsModal({
             const newVal = !isSoundEnabled();
             setSoundEnabled(newVal);
             setSoundLocal(newVal);
-            vscode.postMessage({ type: 'setSoundEnabled', enabled: newVal });
+            if (!isStandalone) {
+              vscode.postMessage({ type: 'setSoundEnabled', enabled: newVal });
+            }
           }}
           onMouseEnter={() => setHovered('sound')}
           onMouseLeave={() => setHovered(null)}

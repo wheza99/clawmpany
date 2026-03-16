@@ -9,7 +9,9 @@ import { setCharacterTemplates } from '../office/sprites/spriteData.js';
 import { extractToolName } from '../office/toolUtils.js';
 import type { OfficeLayout, ToolActivity } from '../office/types.js';
 import { setWallSprites } from '../office/wallTiles.js';
-import { vscode } from '../vscodeApi.js';
+import { isStandalone, vscode } from '../vscodeApi.js';
+
+import { loadAllAssets } from '../standalone/assetLoader.js';
 
 export interface SubagentCharacter {
   id: number;
@@ -60,6 +62,7 @@ export interface ExtensionMessageState {
 }
 
 function saveAgentSeats(os: OfficeState): void {
+  if (isStandalone) return; // Skip in standalone mode
   const seats: Record<number, { palette: number; hueShift: number; seatId: string | null }> = {};
   for (const ch of os.characters.values()) {
     if (ch.isSubagent) continue;
@@ -401,6 +404,71 @@ export function useExtensionMessages(
     vscode.postMessage({ type: 'webviewReady' });
     return () => window.removeEventListener('message', handler);
   }, [getOfficeState]);
+
+  // ── Standalone Mode (no VS Code) ────────────────────────────────────────
+  useEffect(() => {
+    if (!isStandalone) return;
+
+    const loadStandaloneAssets = async () => {
+      try {
+        console.log('[Standalone] Loading assets...');
+        const assets = await loadAllAssets();
+
+        // Set character sprites
+        setCharacterTemplates(assets.characters);
+
+        // Set floor tiles
+        setFloorSprites(assets.floors);
+
+        // Set wall tiles
+        setWallSprites(assets.walls);
+
+        // Build furniture catalog
+        const spriteData: Record<string, string[][]> = {};
+        for (const [id, sprite] of Object.entries(assets.furniture.sprites)) {
+          spriteData[id] = sprite;
+        }
+        buildDynamicCatalog({
+          catalog: assets.furniture.catalog,
+          sprites: spriteData,
+        });
+
+        setLoadedAssets({
+          catalog: assets.furniture.catalog,
+          sprites: spriteData,
+        });
+
+        // Load layout
+        const os = getOfficeState();
+        if (assets.layout) {
+          const layout = migrateLayoutColors(assets.layout as OfficeLayout);
+          os.rebuildFromLayout(layout);
+          onLayoutLoaded?.(layout);
+        }
+
+        // Add demo agents for testing
+        os.addAgent(1, 0, 0, undefined, true, 'Demo Agent');
+        os.addAgent(2, 1, 0, undefined, true, 'Test Agent');
+        os.addAgent(3, 2, 0, undefined, true, 'AI Assistant');
+
+        layoutReadyRef.current = true;
+
+        setAgents([1, 2, 3]);
+        setSelectedAgent(1);
+        setLayoutReady(true);
+        setWorkspaceFolders([{ name: 'Demo Project', path: '/demo' }]);
+
+        // Enable sound by default in standalone
+        setSoundEnabled(true);
+
+        console.log('[Standalone] Mode initialized with demo agents');
+      } catch (error) {
+        console.error('[Standalone] Failed to load assets:', error);
+      }
+    };
+
+    loadStandaloneAssets();
+  }, [getOfficeState, onLayoutLoaded]);
 
   return {
     agents,

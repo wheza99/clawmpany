@@ -14,7 +14,7 @@ import { EditorToolbar } from './office/editor/EditorToolbar.js';
 import { OfficeState } from './office/engine/officeState.js';
 import { isRotatable } from './office/layout/furnitureCatalog.js';
 import { EditTool } from './office/types.js';
-import { vscode } from './vscodeApi.js';
+import { isStandalone, vscode } from './vscodeApi.js';
 
 // Game state lives outside React — updated imperatively by message handlers
 const officeStateRef = { current: null as OfficeState | null };
@@ -149,7 +149,9 @@ function App() {
   const handleToggleDebugMode = useCallback(() => setIsDebugMode((prev) => !prev), []);
 
   const handleSelectAgent = useCallback((id: number) => {
-    vscode.postMessage({ type: 'focusAgent', id });
+    if (!isStandalone) {
+      vscode.postMessage({ type: 'focusAgent', id });
+    }
   }, []);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -168,7 +170,9 @@ function App() {
   );
 
   const handleCloseAgent = useCallback((id: number) => {
-    vscode.postMessage({ type: 'closeAgent', id });
+    if (!isStandalone) {
+      vscode.postMessage({ type: 'closeAgent', id });
+    }
   }, []);
 
   const handleClick = useCallback((agentId: number) => {
@@ -176,7 +180,9 @@ function App() {
     const os = getOfficeState();
     const meta = os.subagentMeta.get(agentId);
     const focusId = meta ? meta.parentAgentId : agentId;
-    vscode.postMessage({ type: 'focusAgent', id: focusId });
+    if (!isStandalone) {
+      vscode.postMessage({ type: 'focusAgent', id: focusId });
+    }
   }, []);
 
   const officeState = getOfficeState();

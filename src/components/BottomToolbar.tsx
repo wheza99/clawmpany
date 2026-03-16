@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
+import type { Server } from '../types/database.js';
+import { useServers } from '../hooks/useServers.js';
 import type { WorkspaceFolder } from '../hooks/useExtensionMessages.js';
 import { ServersModal } from './ServersModal.js';
 import { SettingsModal } from './SettingsModal.js';
@@ -59,11 +61,8 @@ export function BottomToolbar({
   const [hoveredServer, setHoveredServer] = useState<string | null>(null);
   const serversDropdownRef = useRef<HTMLDivElement>(null);
 
-  // Mock servers data - TODO: replace with real data
-  const servers = [
-    { id: '1', name: 'Production Server', status: 'online' },
-    { id: '2', name: 'Development Server', status: 'offline' },
-  ];
+  // Fetch servers from Supabase
+  const { servers, loading: serversLoading } = useServers();
 
   // Close servers dropdown on outside click
   useEffect(() => {
@@ -124,42 +123,65 @@ export function BottomToolbar({
               zIndex: 'var(--pixel-controls-z)',
             }}
           >
-            {servers.map((server) => (
-              <button
-                key={server.id}
-                onClick={() => handleSelectServer(server.id)}
-                onMouseEnter={() => setHoveredServer(server.id)}
-                onMouseLeave={() => setHoveredServer(null)}
+            {serversLoading ? (
+              <div
                 style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  width: '100%',
-                  textAlign: 'left',
-                  padding: '6px 10px',
-                  fontSize: '22px',
-                  color: 'var(--pixel-text)',
-                  background:
-                    hoveredServer === server.id ? 'var(--pixel-btn-hover-bg)' : 'transparent',
-                  border: 'none',
-                  borderRadius: 0,
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap',
+                  padding: '8px 10px',
+                  fontSize: '20px',
+                  color: 'var(--pixel-text-dim)',
                 }}
               >
-                <span>{server.name}</span>
-                <span
+                Loading...
+              </div>
+            ) : servers.length === 0 ? (
+              <div
+                style={{
+                  padding: '8px 10px',
+                  fontSize: '20px',
+                  color: 'var(--pixel-text-dim)',
+                  fontStyle: 'italic',
+                }}
+              >
+                No office yet
+              </div>
+            ) : (
+              servers.map((server: Server) => (
+                <button
+                  key={server.id}
+                  onClick={() => handleSelectServer(server.id)}
+                  onMouseEnter={() => setHoveredServer(server.id)}
+                  onMouseLeave={() => setHoveredServer(null)}
                   style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: '50%',
-                    background: server.status === 'online' ? '#4ade80' : '#ef4444',
-                    flexShrink: 0,
-                    marginLeft: 8,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    width: '100%',
+                    textAlign: 'left',
+                    padding: '6px 10px',
+                    fontSize: '22px',
+                    color: 'var(--pixel-text)',
+                    background:
+                      hoveredServer === server.id ? 'var(--pixel-btn-hover-bg)' : 'transparent',
+                    border: 'none',
+                    borderRadius: 0,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
                   }}
-                />
-              </button>
-            ))}
+                >
+                  <span>{server.name}</span>
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      background: server.status === 'online' ? '#4ade80' : '#ef4444',
+                      flexShrink: 0,
+                      marginLeft: 8,
+                    }}
+                  />
+                </button>
+              ))
+            )}
             <div style={{ borderTop: '1px solid var(--pixel-border)' }}>
               <button
                 onClick={handleCreateServerClick}

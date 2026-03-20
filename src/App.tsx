@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 
 import { AuthCard } from './components/AuthCard.js';
 import { BottomToolbar } from './components/BottomToolbar.js';
+import { ChatSidebar } from './components/ChatSidebar.js';
 import { DebugView } from './components/DebugView.js';
 import { ZoomControls } from './components/ZoomControls.js';
 import { PULSE_ANIMATION_DURATION_SEC } from './constants.js';
@@ -146,6 +147,22 @@ function App() {
     workspaceFolders,
   } = useExtensionMessages(getOfficeState, editor.setLastSavedLayout, isEditDirty);
 
+  // Chat sidebar state
+  const [chatCharacterId, setChatCharacterId] = useState<number | null>(null);
+  const officeState = getOfficeState();
+  const chatCharacter = chatCharacterId !== null ? officeState.getCharacter(chatCharacterId) : null;
+
+  const handleCharacterSelect = useCallback((agentId: number | null) => {
+    setChatCharacterId(agentId);
+  }, []);
+
+  const handleCloseChat = useCallback(() => {
+    setChatCharacterId(null);
+    // Also deselect in office state
+    officeState.selectedAgentId = null;
+    officeState.cameraFollowId = null;
+  }, [officeState]);
+
   // Show migration notice once layout reset is detected
   const [migrationNoticeDismissed, setMigrationNoticeDismissed] = useState(false);
   const showMigrationNotice = layoutWasReset && !migrationNoticeDismissed;
@@ -180,8 +197,6 @@ function App() {
   const handleClick = useCallback((_agentId: number) => {
     // No-op in web mode
   }, []);
-
-  const officeState = getOfficeState();
 
   // Force dependency on editorTickForKeyboard to propagate keyboard-triggered re-renders
   void editorTickForKeyboard;
@@ -239,9 +254,19 @@ function App() {
         .pixel-agents-migration-btn:hover { filter: brightness(0.8); }
       `}</style>
 
+      {/* Chat Sidebar */}
+      {chatCharacter && (
+        <ChatSidebar
+          character={chatCharacter}
+          isOpen={true}
+          onClose={handleCloseChat}
+        />
+      )}
+
       <OfficeCanvas
         officeState={officeState}
         onClick={handleClick}
+        onCharacterSelect={handleCharacterSelect}
         isEditMode={editor.isEditMode}
         editorState={editorState}
         onEditorTileAction={editor.handleEditorTileAction}

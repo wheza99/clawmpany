@@ -188,6 +188,8 @@ export interface Character {
   matrixEffectTimer: number;
   /** Per-column random seeds (16 values) for staggered rain timing */
   matrixEffectSeeds: number[];
+  /** Display name with emoji (e.g., "🤖 Claude") */
+  displayName?: string;
   /** Workspace folder name (only set for multi-root workspaces) */
   folderName?: string;
 }

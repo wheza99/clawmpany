@@ -139,6 +139,8 @@ export interface OfficeLayout {
 
 export interface Character {
   id: number;
+  /** Original agent ID from OpenClaw config (e.g., "main") */
+  agentId?: string;
   state: CharacterState;
   dir: Direction;
   /** Pixel position */

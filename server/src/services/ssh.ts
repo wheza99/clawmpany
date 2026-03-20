@@ -1,9 +1,16 @@
 import { Client } from 'ssh2';
 
-import type { SSHOptions } from '../types/index.js';
+import type {
+  ChatMessage,
+  SessionMeta,
+  SessionsIndex,
+  SessionWithMessages,
+  SSHOptions,
+} from '../types/index.js';
 import { OpenClawConfigSchema } from '../types/index.js';
 
-const OPENCLAW_CONFIG_PATH = '/root/.openclaw/openclaw.json';
+const OPENCLAW_BASE_PATH = '/root/.openclaw';
+const OPENCLAW_CONFIG_PATH = `${OPENCLAW_BASE_PATH}/openclaw.json`;
 const DEFAULT_SSH_PORT = 22;
 const DEFAULT_SSH_USER = 'root';
 const SSH_TIMEOUT = 10000; // 10 seconds
@@ -182,5 +189,289 @@ export async function checkServerConnection(
     if (conn) {
       conn.end();
     }
+  }
+}
+
+// ============================================
+// OpenClaw Session Functions
+// ============================================
+
+/**
+ * Get the path to sessions directory for an agent
+ */
+function getAgentSessionsPath(agentId: string): string {
+  return `${OPENCLAW_BASE_PATH}/agents/${agentId}/sessions`;
+}
+
+/**
+ * Fetch the sessions index (sessions.json) for an agent
+ */
+export async function fetchSessionsIndex(
+  host: string,
+  password: string,
+  agentId: string = 'main',
+  username: string = DEFAULT_SSH_USER,
+  port: number = DEFAULT_SSH_PORT,
+): Promise<SessionsIndex> {
+  const sessionsPath = `${getAgentSessionsPath(agentId)}/sessions.json`;
+  const content = await executeRemoteCommand(host, password, `cat ${sessionsPath}`, username, port);
+
+  try {
+    return JSON.parse(content) as SessionsIndex;
+  } catch {
+    throw new Error(`Failed to parse sessions.json for agent ${agentId}`);
+  }
+}
+
+/**
+ * Parse JSONL session file and extract chat messages
+ */
+function parseSessionJsonl(content: string): ChatMessage[] {
+  const lines = content.trim().split('\n');
+  const messages: ChatMessage[] = [];
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+
+    try {
+      const event = JSON.parse(line);
+
+      if (event.type === 'message' && event.message) {
+        const { role, content: msgContent } = event.message;
+
+        // Only process user and assistant messages
+        if (role !== 'user' && role !== 'assistant') continue;
+
+        // Extract text content
+        let textContent = '';
+        if (Array.isArray(msgContent)) {
+          for (const item of msgContent) {
+            if (item.type === 'text') {
+              textContent += item.text;
+            }
+            // Skip 'thinking', 'toolCall', 'toolResult' for now
+          }
+        }
+
+        // Skip empty messages
+        if (!textContent) continue;
+
+        messages.push({
+          id: event.id,
+          role,
+          content: textContent,
+          timestamp: event.timestamp,
+        });
+      }
+    } catch {
+      // Skip malformed lines
+      continue;
+    }
+  }
+
+  return messages;
+}
+
+/**
+ * List all sessions with basic info for an agent
+ */
+export async function listSessions(
+  host: string,
+  password: string,
+  agentId: string = 'main',
+  username: string = DEFAULT_SSH_USER,
+  port: number = DEFAULT_SSH_PORT,
+): Promise<Array<{
+  sessionId: string;
+  sessionKey: string;
+  chatType: 'direct' | 'channel';
+  channel?: string;
+  displayName?: string;
+  updatedAt: number;
+  model?: string;
+}>> {
+  const sessionsIndex = await fetchSessionsIndex(host, password, agentId, username, port);
+
+  return Object.entries(sessionsIndex).map(([key, meta]) => ({
+    sessionId: meta.sessionId,
+    sessionKey: key,
+    chatType: meta.chatType,
+    channel: meta.channel,
+    displayName: meta.displayName,
+    updatedAt: meta.updatedAt,
+    model: meta.model,
+  }));
+}
+
+/**
+ * Fetch session history (messages) for a specific session
+ */
+export async function fetchSessionHistory(
+  host: string,
+  password: string,
+  sessionId: string,
+  agentId: string = 'main',
+  username: string = DEFAULT_SSH_USER,
+  port: number = DEFAULT_SSH_PORT,
+): Promise<SessionWithMessages> {
+  // First, get the sessions index to find the session file path
+  const sessionsIndex = await fetchSessionsIndex(host, password, agentId, username, port);
+
+  // Find the session by ID
+  let sessionMeta = null;
+  let sessionKey = '';
+
+  for (const [key, meta] of Object.entries(sessionsIndex)) {
+    if (meta.sessionId === sessionId) {
+      sessionMeta = meta;
+      sessionKey = key;
+      break;
+    }
+  }
+
+  if (!sessionMeta) {
+    throw new Error(`Session ${sessionId} not found for agent ${agentId}`);
+  }
+
+  // Read the session file
+  const sessionFile = sessionMeta.sessionFile;
+  const content = await executeRemoteCommand(host, password, `cat ${sessionFile}`, username, port);
+
+  // Parse messages
+  const messages = parseSessionJsonl(content);
+
+  // Extract agent ID from session key (format: "agent:{agentId}:{...}")
+  const keyParts = sessionKey.split(':');
+  const extractedAgentId = keyParts[1] || agentId;
+
+  return {
+    sessionId: sessionMeta.sessionId,
+    agentId: extractedAgentId,
+    chatType: sessionMeta.chatType,
+    channel: sessionMeta.channel,
+    model: sessionMeta.model,
+    modelProvider: sessionMeta.modelProvider,
+    updatedAt: sessionMeta.updatedAt,
+    messages,
+  };
+}
+
+/**
+ * Send a message to an OpenClaw agent and get the response
+ * Uses the OpenClaw CLI: openclaw agent --local --agent <agentId> --message "<message>"
+ */
+export async function sendMessageToAgent(
+  host: string,
+  password: string,
+  sessionId: string,
+  content: string,
+  agentId: string = 'main',
+  username: string = DEFAULT_SSH_USER,
+  port: number = DEFAULT_SSH_PORT,
+): Promise<{
+  success: boolean;
+  response?: string;
+  sessionId: string;
+  error?: string;
+}> {
+  // Escape double quotes and backticks in the message for shell safety
+  const escapedContent = content
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/`/g, '\\`')
+    .replace(/\$/g, '\\$');
+
+  // Build the openclaw agent command
+  // Use --session-id to target specific session, --json for structured output
+  // Note: 2>&1 captures both stdout and stderr, we'll parse the JSON from output
+  const command = `openclaw agent --local --agent "${agentId}" --session-id "${sessionId}" --message "${escapedContent}" --json 2>&1`;
+
+  try {
+    const output = await executeRemoteCommand(host, password, command, username, port);
+
+    // Find the JSON object in the output (skip [tools] and other prefix lines)
+    const jsonStartIndex = output.indexOf('{\n  "payloads"');
+    if (jsonStartIndex === -1) {
+      // Try finding any JSON object start
+      const altJsonStart = output.indexOf('{"payloads"');
+      if (altJsonStart !== -1) {
+        const jsonStr = output.slice(altJsonStart);
+        return parseOpenClawResponse(jsonStr, sessionId);
+      }
+
+      // No JSON found - check for errors
+      if (output.includes('error') || output.includes('Error') || output.includes('failed')) {
+        // Filter out [tools] lines for cleaner error message
+        const errorLines = output
+          .split('\n')
+          .filter((line) => !line.startsWith('[tools]') && line.trim())
+          .join('\n');
+        return {
+          success: false,
+          error: errorLines || 'Unknown error',
+          sessionId,
+        };
+      }
+
+      return {
+        success: true,
+        response: output,
+        sessionId,
+      };
+    }
+
+    const jsonStr = output.slice(jsonStartIndex);
+    return parseOpenClawResponse(jsonStr, sessionId);
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      sessionId,
+    };
+  }
+}
+
+/**
+ * Parse OpenClaw JSON response and extract text
+ */
+function parseOpenClawResponse(
+  jsonStr: string,
+  sessionId: string,
+): {
+  success: boolean;
+  response?: string;
+  sessionId: string;
+  error?: string;
+} {
+  try {
+    // The JSON might be followed by other output, find where it ends
+    // Try to parse the complete JSON
+    const result = JSON.parse(jsonStr);
+
+    if (result.payloads && result.payloads.length > 0) {
+      // OpenClaw may return multiple payloads (streaming drafts)
+      // Take only the LAST one as it's the most complete response
+      const lastPayload = result.payloads[result.payloads.length - 1];
+      const responseText = lastPayload?.text?.trim() || '';
+
+      return {
+        success: true,
+        response: responseText,
+        sessionId: result.meta?.agentMeta?.sessionId || sessionId,
+      };
+    }
+
+    return {
+      success: true,
+      response: '',
+      sessionId: result.meta?.agentMeta?.sessionId || sessionId,
+    };
+  } catch {
+    // JSON parse failed - might be incomplete or malformed
+    return {
+      success: false,
+      error: 'Failed to parse agent response',
+      sessionId,
+    };
   }
 }

@@ -79,3 +79,44 @@ export interface ApiResponse<T> {
   error?: string;
   message?: string;
 }
+
+// ============================================
+// OpenClaw Session Types
+// ============================================
+
+/** Session metadata from sessions.json */
+export interface SessionMeta {
+  sessionId: string;
+  sessionFile: string;
+  chatType: 'direct' | 'channel';
+  updatedAt: number;
+  channel?: string;
+  lastChannel?: string;
+  groupId?: string;
+  displayName?: string;
+  model?: string;
+  modelProvider?: string;
+}
+
+/** Index of all sessions */
+export type SessionsIndex = Record<string, SessionMeta>;
+
+/** Parsed chat message for frontend */
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+}
+
+/** Session with messages */
+export interface SessionWithMessages {
+  sessionId: string;
+  agentId: string;
+  chatType: 'direct' | 'channel';
+  channel?: string;
+  model?: string;
+  modelProvider?: string;
+  updatedAt: number;
+  messages: ChatMessage[];
+}

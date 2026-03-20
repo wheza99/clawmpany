@@ -6,6 +6,7 @@ import express from 'express';
 import helmet from 'helmet';
 
 import { serverRoutes } from './routes/servers.js';
+import { sessionsRoutes } from './routes/sessions.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -25,6 +26,7 @@ app.get('/health', (_req, res) => {
 
 // API routes
 app.use('/api/servers', serverRoutes);
+app.use('/api/servers/:serverId/sessions', sessionsRoutes);
 
 // Error handler
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

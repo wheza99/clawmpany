@@ -126,6 +126,7 @@ export class CharacterManager {
     preferredSeatId?: string,
     skipSpawnEffect?: boolean,
     displayName?: string,
+    agentId?: string,
   ): void {
     if (this.characters.has(id)) return;
 
@@ -175,6 +176,9 @@ export class CharacterManager {
 
     if (displayName) {
       ch.displayName = displayName;
+    }
+    if (agentId) {
+      ch.agentId = agentId;
     }
     if (!skipSpawnEffect) {
       ch.matrixEffect = 'spawn';

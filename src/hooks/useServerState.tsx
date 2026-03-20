@@ -110,9 +110,9 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
       const name = agent.identity?.name || agent.name || agent.id;
       const displayName = `${emoji} ${name}`;
 
-      // Add agent to office (displayName will be stored in character.displayName)
-      officeState.addAgent(agentId, undefined, undefined, undefined, true, displayName);
-      console.log(`[ServerAgents] Added: ${displayName} (hash: ${agentId})`);
+      // Add agent to office (pass original agentId for chat API)
+      officeState.addAgent(agentId, undefined, undefined, undefined, true, displayName, agent.id);
+      console.log(`[ServerAgents] Added: ${displayName} (hash: ${agentId}, agentId: ${agent.id})`);
     }
 
     // Verify count

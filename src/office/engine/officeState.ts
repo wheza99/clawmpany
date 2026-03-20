@@ -118,6 +118,7 @@ export class OfficeState {
     preferredSeatId?: string,
     skipSpawnEffect?: boolean,
     displayName?: string,
+    agentId?: string,
   ): void {
     this.characterManager.addAgent(
       id,
@@ -126,6 +127,7 @@ export class OfficeState {
       preferredSeatId,
       skipSpawnEffect,
       displayName,
+      agentId,
     );
   }
 

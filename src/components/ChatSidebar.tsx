@@ -1,19 +1,24 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Send } from 'lucide-react';
 
 import type { Character } from '../office/types.js';
+import type { Server } from '../types/database.js';
+
+// API base URL - backend server
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  timestamp: Date;
+  timestamp: string;
 }
 
 interface ChatSidebarProps {
   character: Character;
   isOpen: boolean;
   onClose: () => void;
+  activeServer: Server | null;
 }
 
 // Pixel-style avatar component
@@ -53,10 +58,13 @@ function CharacterAvatar({ character }: { character: Character }) {
   );
 }
 
-export function ChatSidebar({ character, isOpen, onClose }: ChatSidebarProps) {
+export function ChatSidebar({ character, isOpen, onClose, activeServer }: ChatSidebarProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [loadingSeconds, setLoadingSeconds] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Extract name from displayName
@@ -64,33 +72,125 @@ export function ChatSidebar({ character, isOpen, onClose }: ChatSidebarProps) {
   const name = character.displayName?.replace(/^(\p{Emoji}\s*)/u, '') || `Agent ${character.id}`;
   const status = character.isActive ? 'Working...' : 'Idle';
 
-  const handleSendMessage = useCallback(() => {
-    if (!inputValue.trim() || isLoading) return;
+  // Can chat if we have server and agentId
+  const canChat = activeServer && character.agentId;
+
+  // Fetch chat history when sidebar opens
+  useEffect(() => {
+    if (!isOpen || !canChat) return;
+
+    const fetchHistory = async () => {
+      setIsLoadingHistory(true);
+      try {
+        // First, get list of sessions
+        const sessionsRes = await fetch(
+          `${API_BASE_URL}/api/servers/${activeServer.id}/sessions?agentId=${character.agentId}`
+        );
+        const sessionsData = await sessionsRes.json();
+
+        if (sessionsData.success && sessionsData.data.length > 0) {
+          // Get the first session (usually the main direct chat)
+          const mainSession = sessionsData.data.find(
+            (s: { chatType: string }) => s.chatType === 'direct'
+          ) || sessionsData.data[0];
+
+          setSessionId(mainSession.sessionId);
+
+          // Fetch messages for this session
+          const historyRes = await fetch(
+            `${API_BASE_URL}/api/servers/${activeServer.id}/sessions/${mainSession.sessionId}?agentId=${character.agentId}`
+          );
+          const historyData = await historyRes.json();
+
+          if (historyData.success && historyData.data.messages) {
+            setMessages(historyData.data.messages);
+          }
+        }
+      } catch (error) {
+        console.error('[ChatSidebar] Failed to fetch history:', error);
+      } finally {
+        setIsLoadingHistory(false);
+      }
+    };
+
+    fetchHistory();
+  }, [isOpen, canChat, activeServer, character.agentId]);
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Track loading time
+  useEffect(() => {
+    if (!isLoading) {
+      setLoadingSeconds(0);
+      return;
+    }
+
+    setLoadingSeconds(0);
+    const interval = setInterval(() => {
+      setLoadingSeconds((s) => s + 1);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isLoading]);
+
+  const handleSendMessage = useCallback(async () => {
+    if (!inputValue.trim() || isLoading || !canChat || !sessionId) return;
 
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       role: 'user',
       content: inputValue.trim(),
-      timestamp: new Date(),
+      timestamp: new Date().toISOString(),
     };
 
     setMessages((prev) => [...prev, userMessage]);
     setInputValue('');
     setIsLoading(true);
 
-    // TODO: Integrate with backend chat API
-    // For now, just show a placeholder response after a delay
-    setTimeout(() => {
-      const assistantMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: `Hello! I'm ${name}. Chat integration coming soon! 🚀`,
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
+    try {
+      // Send message to backend
+      const res = await fetch(
+        `${API_BASE_URL}/api/servers/${activeServer.id}/sessions/${sessionId}/messages`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            content: userMessage.content,
+            agentId: character.agentId,
+          }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!data.success) {
+        console.error('[ChatSidebar] Failed to send:', data.error);
+        // Remove the optimistic message on error
+        setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
+        return;
+      }
+
+      // Add agent response if available
+      if (data.data?.response) {
+        const assistantMessage: ChatMessage = {
+          id: `${Date.now()}-response`,
+          role: 'assistant',
+          content: data.data.response,
+          timestamp: new Date().toISOString(),
+        };
+        setMessages((prev) => [...prev, assistantMessage]);
+      }
+    } catch (error) {
+      console.error('[ChatSidebar] Failed to send message:', error);
+      // Remove the optimistic message on error
+      setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
+    } finally {
       setIsLoading(false);
-    }, 1000);
-  }, [inputValue, isLoading, name]);
+    }
+  }, [inputValue, isLoading, canChat, activeServer, character.agentId, sessionId]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -197,7 +297,36 @@ export function ChatSidebar({ character, isOpen, onClose }: ChatSidebarProps) {
           gap: 12,
         }}
       >
-        {messages.length === 0 ? (
+        {!canChat ? (
+          <div
+            style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--pixel-text-dim)',
+              textAlign: 'center',
+              gap: 8,
+            }}
+          >
+            <span style={{ fontSize: 48 }}>🔌</span>
+            <div style={{ fontSize: 14 }}>Select a server to start chatting</div>
+          </div>
+        ) : isLoadingHistory ? (
+          <div
+            style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--pixel-text-dim)',
+            }}
+          >
+            <span className="pixel-agents-pulse">Loading history...</span>
+          </div>
+        ) : messages.length === 0 ? (
           <div
             style={{
               flex: 1,
@@ -230,9 +359,12 @@ export function ChatSidebar({ character, isOpen, onClose }: ChatSidebarProps) {
                   background:
                     msg.role === 'user' ? 'var(--pixel-accent)' : 'var(--pixel-card-bg, rgba(255,255,255,0.05))',
                   color: msg.role === 'user' ? '#fff' : 'var(--pixel-text)',
-                  fontSize: 14,
+                  fontSize: 20,
                   lineHeight: 1.5,
                   border: msg.role === 'user' ? 'none' : '1px solid var(--pixel-border)',
+                  wordBreak: 'break-word',
+                  overflowWrap: 'break-word',
+                  whiteSpace: 'pre-wrap',
                 }}
               >
                 {msg.content}
@@ -252,7 +384,7 @@ export function ChatSidebar({ character, isOpen, onClose }: ChatSidebarProps) {
                 fontSize: 14,
               }}
             >
-              <span className="pixel-agents-pulse">Thinking...</span>
+              <span className="pixel-agents-pulse">Thinking... ({loadingSeconds}s)</span>
             </div>
           </div>
         )}
@@ -273,8 +405,8 @@ export function ChatSidebar({ character, isOpen, onClose }: ChatSidebarProps) {
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={`Message ${name}...`}
-          disabled={isLoading}
+          placeholder={canChat ? `Message ${name}...` : 'Select a server first'}
+          disabled={isLoading || !canChat}
           style={{
             flex: 1,
             padding: '10px 14px',
@@ -282,23 +414,24 @@ export function ChatSidebar({ character, isOpen, onClose }: ChatSidebarProps) {
             border: '2px solid var(--pixel-border)',
             background: 'var(--pixel-input-bg, rgba(0,0,0,0.3))',
             color: 'var(--pixel-text)',
-            fontSize: 14,
+            fontSize: 20,
             outline: 'none',
+            opacity: canChat ? 1 : 0.6,
           }}
         />
         <button
           onClick={handleSendMessage}
-          disabled={!inputValue.trim() || isLoading}
+          disabled={!inputValue.trim() || isLoading || !canChat}
           style={{
             width: 40,
             height: 40,
             padding: 0,
             borderRadius: 4,
             border: '2px solid var(--pixel-border)',
-            background: inputValue.trim() && !isLoading ? 'var(--pixel-accent)' : 'var(--pixel-btn-bg)',
-            color: inputValue.trim() && !isLoading ? '#fff' : 'var(--pixel-text-dim)',
-            cursor: inputValue.trim() && !isLoading ? 'pointer' : 'not-allowed',
-            opacity: inputValue.trim() && !isLoading ? 1 : 0.6,
+            background: inputValue.trim() && !isLoading && canChat ? 'var(--pixel-accent)' : 'var(--pixel-btn-bg)',
+            color: inputValue.trim() && !isLoading && canChat ? '#fff' : 'var(--pixel-text-dim)',
+            cursor: inputValue.trim() && !isLoading && canChat ? 'pointer' : 'not-allowed',
+            opacity: inputValue.trim() && !isLoading && canChat ? 1 : 0.6,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',

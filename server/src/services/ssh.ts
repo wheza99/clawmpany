@@ -374,17 +374,17 @@ export async function sendMessageToAgent(
   sessionId: string;
   error?: string;
 }> {
-  // Escape double quotes and backticks in the message for shell safety
+  // Escape single quotes and special chars for shell safety (using single quotes in command)
+  // In single quotes, only single quotes need escaping (replace ' with '\'')
   const escapedContent = content
     .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/`/g, '\\`')
-    .replace(/\$/g, '\\$');
+    .replace(/'/g, "'\\''");
 
   // Build the openclaw agent command
   // Use --session-id to target specific session, --json for structured output
   // Note: 2>&1 captures both stdout and stderr, we'll parse the JSON from output
-  const command = `openclaw agent --local --agent "${agentId}" --session-id "${sessionId}" --message "${escapedContent}" --json 2>&1`;
+  // Set PATH explicitly to include common npm global locations
+  const command = `export PATH="$PATH:/root/.npm-global/bin:/usr/local/bin:~/.npm-global/bin" && openclaw agent --local --agent '${agentId}' --session-id '${sessionId}' --message '${escapedContent}' --json 2>&1`;
 
   try {
     const output = await executeRemoteCommand(host, password, command, username, port);

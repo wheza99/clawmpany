@@ -102,7 +102,22 @@ export class OfficeState {
     return this.layout;
   }
 
+  /** Furniture types that should be prioritized for agent spawning */
+  private static readonly PREFERRED_SEAT_TYPES = ['WOODEN_BENCH', 'CUSHIONED_BENCH'];
+
   private findFreeSeat(): string | null {
+    // First pass: find free seats from preferred types (benches)
+    for (const [uid, seat] of this.seats) {
+      if (seat.assigned) continue;
+      // Extract furniture uid from seat uid (handle multi-tile seats like "uid:N")
+      const furnUid = uid.includes(':') ? uid.split(':')[0] : uid;
+      const furniture = this.layout.furniture.find((f) => f.uid === furnUid);
+      if (furniture && OfficeState.PREFERRED_SEAT_TYPES.includes(furniture.type)) {
+        return uid;
+      }
+    }
+
+    // Second pass: find any free seat (chairs, sofas, etc.)
     for (const [uid, seat] of this.seats) {
       if (!seat.assigned) return uid;
     }

@@ -16,6 +16,9 @@ dist-ssr
 .env
 !.env.example
 
+# PocketBase data (contains database and uploaded files)
+pocketbase/pb_data
+
 # Editor directories and files
 .idea
 .DS_Store
@@ -25,3 +28,6 @@ dist-ssr
 *.sln
 *.sw?
 Thumbs.db
+
+# TypeScript build info
+tsconfig.tsbuildinfo

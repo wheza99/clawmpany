@@ -1,0 +1,8 @@
+# Ignore data directory
+pb_data/
+
+# Keep migrations
+!pb_migrations/
+
+# Ignore docs
+*.md

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePrivy, useWallets } from '@privy-io/react-auth';
 
 interface ServersModalProps {
@@ -30,7 +30,7 @@ const OFFICE_PACKAGES: OfficePackage[] = [
     cpu: 2,
     ram: 2,
     storage: 40,
-    priceUsdc: 10,
+    priceUsdc: 8,
     priceRupiah: 120000,
   },
   {
@@ -42,7 +42,7 @@ const OFFICE_PACKAGES: OfficePackage[] = [
     cpu: 2,
     ram: 4,
     storage: 60,
-    priceUsdc: 20,
+    priceUsdc: 12,
     priceRupiah: 180000,
   },
   {
@@ -54,7 +54,7 @@ const OFFICE_PACKAGES: OfficePackage[] = [
     cpu: 2,
     ram: 8,
     storage: 80,
-    priceUsdc: 40,
+    priceUsdc: 20,
     priceRupiah: 300000,
   },
 ];
@@ -88,9 +88,11 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
   const [usdcBalance, setUsdcBalance] = useState<number>(0);
   const [isCheckingBalance, setIsCheckingBalance] = useState(false);
   const [reservedOffice, setReservedOffice] = useState<ReservedOffice | null>(null);
+  const [countdown, setCountdown] = useState<number>(60); // 60 seconds countdown
 
   // Ref to track reserved server ID for cleanup (survives state clears)
   const reservedServerIdRef = useRef<string | null>(null);
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Ref to track if we should cancel reservation on unmount
   const shouldCancelReservation = useRef(false);
 
@@ -131,6 +133,67 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty deps - only run on actual unmount
+
+  // Countdown timer for reservation
+  useEffect(() => {
+    // Start countdown when reservation is made and payment step is 'select' or 'paying'
+    if (reservedOffice && (paymentStep === 'select' || paymentStep === 'paying')) {
+      // Clear any existing interval
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
+
+      // Start new countdown
+      countdownIntervalRef.current = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            // Countdown expired - cancel reservation
+            console.log('[Countdown] Reservation expired, canceling...');
+            clearInterval(countdownIntervalRef.current!);
+            
+            // Cancel reservation via API
+            const serverId = reservedServerIdRef.current;
+            const userId = privyUser?.id;
+            if (serverId && userId) {
+              fetch(`${API_BASE_URL}/api/servers/cancel-reservation`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-user-id': userId,
+                },
+                body: JSON.stringify({ serverId }),
+              }).catch((err) => {
+                console.error('Failed to cancel expired reservation:', err);
+              });
+            }
+
+            // Show error
+            setPaymentError('Reservation expired. Please try again.');
+            setPaymentStep('error');
+            setReservedOffice(null);
+            reservedServerIdRef.current = null;
+            
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+
+    // Cleanup interval
+    return () => {
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
+    };
+  }, [reservedOffice, paymentStep, privyUser?.id]);
+
+  // Reset countdown when starting new reservation
+  useEffect(() => {
+    if (paymentStep === 'checking') {
+      setCountdown(60);
+    }
+  }, [paymentStep]);
 
   if (!isOpen) return null;
 
@@ -750,18 +813,24 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
                   <p style={{ fontSize: '18px', color: 'var(--pixel-text)', marginTop: 4 }}>
                     {selectedPkg.size} • Up to {selectedPkg.employees} employees
                   </p>
+                  
+                  {/* Countdown timer */}
                   <div
                     style={{
                       marginTop: 12,
                       padding: '8px 12px',
-                      background: 'rgba(34, 197, 94, 0.1)',
-                      border: '1px solid rgba(34, 197, 94, 0.3)',
+                      background: countdown <= 10 ? 'rgba(239, 68, 68, 0.1)' : 'rgba(34, 197, 94, 0.1)',
+                      border: `1px solid ${countdown <= 10 ? 'rgba(239, 68, 68, 0.3)' : 'rgba(34, 197, 94, 0.3)'}`,
                       borderRadius: 4,
                       display: 'inline-block',
                     }}
                   >
-                    <span style={{ fontSize: '12px', color: '#22c55e' }}>
-                      ✓ Office reserved for you
+                    <span style={{ 
+                      fontSize: '14px', 
+                      color: countdown <= 10 ? '#ef4444' : '#22c55e',
+                      fontWeight: 'bold',
+                    }}>
+                      ⏱️ Reservation expires in {countdown}s
                     </span>
                   </div>
                 </div>
@@ -918,6 +987,26 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
                       Your balance: {isCheckingBalance ? '...' : `${usdcBalance.toFixed(2)} USDC`}
                     </p>
                   )}
+                  
+                  {/* Countdown timer */}
+                  <div
+                    style={{
+                      marginTop: 12,
+                      padding: '6px 10px',
+                      background: countdown <= 10 ? 'rgba(239, 68, 68, 0.1)' : 'rgba(251, 191, 36, 0.1)',
+                      border: `1px solid ${countdown <= 10 ? 'rgba(239, 68, 68, 0.3)' : 'rgba(251, 191, 36, 0.3)'}`,
+                      borderRadius: 4,
+                      display: 'inline-block',
+                    }}
+                  >
+                    <span style={{ 
+                      fontSize: '12px', 
+                      color: countdown <= 10 ? '#ef4444' : '#fbbf24',
+                      fontWeight: 'bold',
+                    }}>
+                      ⏱️ {countdown}s remaining
+                    </span>
+                  </div>
                 </div>
 
                 <div style={{ display: 'flex', gap: 12 }}>
@@ -1048,12 +1137,15 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
                       marginTop: 16,
                     }}
                   >
-                    {paymentError?.includes('No') && paymentError?.includes('available') ? `${selectedPkg?.name} Unavailable` : 
+                    {paymentError?.includes('expired') ? 'Reservation Expired' :
+                     paymentError?.includes('No') && paymentError?.includes('available') ? `${selectedPkg?.name} Unavailable` : 
                      paymentError?.includes('Insufficient') || paymentError?.includes('Not enough') ? 'Insufficient Balance' :
                      'Payment Failed'}
                   </h2>
                   <p style={{ fontSize: '16px', color: 'var(--pixel-text)', marginTop: 8 }}>
-                    {paymentError?.includes('No') && paymentError?.includes('available')
+                    {paymentError?.includes('expired')
+                      ? 'Your reservation timed out. Please try again to reserve a new office.'
+                      : paymentError?.includes('No') && paymentError?.includes('available')
                       ? `No ${selectedPkg?.name} offices available right now. Try another package or check back soon!`
                       : paymentError?.includes('Insufficient') || paymentError?.includes('Not enough')
                       ? 'Top up your USDC balance and try again.'

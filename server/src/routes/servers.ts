@@ -89,6 +89,56 @@ serverRoutes.get('/', async (req, res) => {
   }
 });
 
+// Reservation timeout in milliseconds (60 seconds)
+const RESERVATION_TIMEOUT_MS = 60 * 1000;
+
+/**
+ * Get available servers including expired reservations
+ * Returns servers that are either:
+ * 1. status="available", OR
+ * 2. status="reserved" AND updated > 60 seconds ago (using auto-updated field)
+ */
+async function getAvailableServer(
+  pb: PocketBase,
+  spec: { cpu: number; ram: number; storage: number }
+): Promise<{ id: string; [key: string]: any } | null> {
+  const timeoutDate = new Date(Date.now() - RESERVATION_TIMEOUT_MS).toISOString();
+  
+  // First, try to find simply available servers
+  const baseSpec = `cpu=${spec.cpu} && ram=${spec.ram} && storage=${spec.storage}`;
+  const availableServers = await pb.collection('server').getFullList({
+    filter: `status="available" && ${baseSpec}`,
+    sort: 'created',
+  });
+
+  if (availableServers.length > 0) {
+    console.log(`[getAvailableServer] Found ${availableServers.length} available servers`);
+    return availableServers[0];
+  }
+
+  // If no available servers, check for expired reservations using 'updated' field
+  const reservedServers = await pb.collection('server').getFullList({
+    filter: `status="reserved" && ${baseSpec}`,
+    sort: 'created',
+  });
+
+  for (const server of reservedServers) {
+    // Use 'updated' field - auto-updated when row changes
+    if (server.updated) {
+      const updatedAt = new Date(server.updated);
+      if (updatedAt <= new Date(timeoutDate)) {
+        console.log(`[getAvailableServer] Found expired reservation: ${server.id}, updated: ${server.updated}`);
+        return server;
+      } else {
+        console.log(`[getAvailableServer] Reservation ${server.id} still valid, updated: ${server.updated}`);
+      }
+    }
+  }
+
+  console.log(`[getAvailableServer] No available servers found`);
+  return null;
+}
+
 /**
  * GET /api/servers/availability
  * Check how many servers are available for each package
@@ -108,8 +158,10 @@ serverRoutes.get('/availability', async (req, res) => {
     const availability: Record<string, { available: number; spec: { cpu: number; ram: number; storage: number } }> = {};
     
     for (const [packageName, spec] of Object.entries(packageSpecs)) {
-      const filter = `status="available" && cpu=${spec.cpu} && ram=${spec.ram} && storage=${spec.storage}`;
-      const servers = await pb.collection('server').getFullList({ filter });
+      // Count available servers (simple filter, no complex OR logic)
+      const servers = await pb.collection('server').getFullList({
+        filter: `status="available" && cpu=${spec.cpu} && ram=${spec.ram} && storage=${spec.storage}`,
+      });
       
       availability[packageName] = {
         available: servers.length,
@@ -165,14 +217,8 @@ serverRoutes.post('/reserve', async (req, res) => {
     const spec = packageSpecs[packageType] || packageSpecs.business;
 
     // Find an available office matching the package spec
-    // Filter: status=available AND cpu=X AND ram=Y AND storage=Z
-    const filter = `status="available" && cpu=${spec.cpu} && ram=${spec.ram} && storage=${spec.storage}`;
-    
-    console.log(`[/api/servers/reserve] Searching with filter: ${filter}`);
-    
-    const server = await pb.collection('server').getFirstListItem(filter, {
-      sort: 'created', // Get oldest available office
-    }).catch(() => null);
+    // Includes servers with expired reservations (>60 seconds old)
+    const server = await getAvailableServer(pb, spec);
 
     if (!server) {
       console.log(`[/api/servers/reserve] No available ${packageType} offices (${spec.cpu} vCPU, ${spec.ram}GB RAM, ${spec.storage}GB)`);

@@ -59,9 +59,7 @@ const OFFICE_PACKAGES: OfficePackage[] = [
   },
 ];
 
-// Payment recipient address from env
-const PAYMENT_RECIPIENT_ADDRESS = import.meta.env.VITE_PAYMENT_RECIPIENT_ADDRESS || '0x0000000000000000000000000000000000000000';
-const BASE_CHAIN_ID = '0x2105'; // Base mainnet
+// Fallback USDC contract address (Base mainnet) - used if backend config fails
 const USDC_CONTRACT = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 
 // API base URL
@@ -89,6 +87,13 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
   const [isCheckingBalance, setIsCheckingBalance] = useState(false);
   const [reservedOffice, setReservedOffice] = useState<ReservedOffice | null>(null);
   const [countdown, setCountdown] = useState<number>(60); // 60 seconds countdown
+  
+  // Payment config from backend (secure)
+  const [paymentConfig, setPaymentConfig] = useState<{
+    recipientAddress: string;
+    chainId: string;
+    usdcContract: string;
+  } | null>(null);
 
   // Ref to track reserved server ID for cleanup (survives state clears)
   const reservedServerIdRef = useRef<string | null>(null);
@@ -133,6 +138,33 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty deps - only run on actual unmount
+
+  // Fetch payment config from backend (secure)
+  useEffect(() => {
+    if (!isOpen || !authenticated) return;
+    
+    const fetchPaymentConfig = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/payment/config`);
+        const result = await response.json();
+        
+        if (result.success && result.data) {
+          setPaymentConfig({
+            recipientAddress: result.data.recipientAddress,
+            chainId: result.data.chainId,
+            usdcContract: result.data.usdcContract,
+          });
+          console.log('[Payment] Config loaded from backend');
+        } else {
+          console.error('[Payment] Failed to load config:', result.error);
+        }
+      } catch (error) {
+        console.error('[Payment] Error fetching config:', error);
+      }
+    };
+    
+    fetchPaymentConfig();
+  }, [isOpen, authenticated]);
 
   // Countdown timer for reservation
   useEffect(() => {
@@ -201,6 +233,9 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
   const fetchUsdcBalance = async (): Promise<number> => {
     if (!evmWallet) return 0;
 
+    // Use USDC contract from backend config if available, otherwise fallback
+    const usdcContract = paymentConfig?.usdcContract || USDC_CONTRACT;
+    
     try {
       const provider = await evmWallet.getEthereumProvider();
       const paddedAddress = evmWallet.address.slice(2).padStart(64, '0');
@@ -208,7 +243,7 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
 
       const result = await provider.request({
         method: 'eth_call',
-        params: [{ to: USDC_CONTRACT, data: data }, 'latest'],
+        params: [{ to: usdcContract, data: data }, 'latest'],
       });
 
       const balanceInMicroUsdc = parseInt(result, 16);
@@ -321,15 +356,20 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
         setPaymentStep('paying');
         setPaymentError(null);
 
+        // Ensure payment config is loaded
+        if (!paymentConfig) {
+          throw new Error('Payment configuration not loaded. Please refresh and try again.');
+        }
+
         const provider = await evmWallet.getEthereumProvider();
 
-        // Switch to Base network if needed
+        // Switch to correct network if needed
         try {
           const currentChainId = await provider.request({ method: 'eth_chainId' });
-          if (currentChainId !== BASE_CHAIN_ID) {
+          if (currentChainId !== paymentConfig.chainId) {
             await provider.request({
               method: 'wallet_switchEthereumChain',
-              params: [{ chainId: BASE_CHAIN_ID }],
+              params: [{ chainId: paymentConfig.chainId }],
             });
           }
         } catch (switchError) {
@@ -340,7 +380,7 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
         const amountInMicroUsdc = BigInt(Math.floor(selectedPkg.priceUsdc * 1e6));
 
         // Pad address to 32 bytes
-        const recipientPadded = PAYMENT_RECIPIENT_ADDRESS.slice(2).padStart(64, '0');
+        const recipientPadded = paymentConfig.recipientAddress.slice(2).padStart(64, '0');
         const amountPadded = amountInMicroUsdc.toString(16).padStart(64, '0');
 
         // ERC-20 transfer function signature
@@ -351,7 +391,7 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
           method: 'eth_sendTransaction',
           params: [{
             from: evmWallet.address,
-            to: USDC_CONTRACT,
+            to: paymentConfig.usdcContract,
             data: transferData,
           }],
         });
@@ -389,10 +429,18 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
       } catch (error: any) {
         console.error('Payment failed:', error);
 
-        // Cancel reservation
-        await cancelReservation();
+        // Cancel reservation (don't await to avoid blocking UI)
+        cancelReservation().catch((err) => console.error('Failed to cancel reservation:', err));
 
-        setPaymentError(error.message || 'Payment was cancelled or failed');
+        // Handle specific wallet errors
+        let errorMessage = 'Payment was cancelled or failed';
+        if (error.code === 4001) {
+          errorMessage = 'Transaction rejected by user';
+        } else if (error.message) {
+          errorMessage = error.message;
+        }
+        
+        setPaymentError(errorMessage);
         setPaymentStep('error');
       }
     } else if (paymentMethod === 'rupiah') {
@@ -462,13 +510,9 @@ export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModa
     }
   };
 
-  const handleBackFromPayment = async () => {
-    // User wants to go back from payment - cancel reservation and restart flow
-    if (reservedOffice || reservedServerIdRef.current) {
-      await cancelReservation();
-    }
-    
-    // Reset to checking state to re-reserve if user wants to try again
+  const handleBackFromPayment = () => {
+    // User wants to go back from payment to select another payment method
+    // Don't cancel reservation - just go back to select step
     setPaymentStep('select');
     setPaymentMethod(null);
   };

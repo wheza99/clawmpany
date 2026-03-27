@@ -6,6 +6,7 @@ import express from 'express';
 import helmet from 'helmet';
 
 import { officesRoutes } from './routes/offices.js';
+import { paymentRoutes } from './routes/payment.js';
 import { serverRoutes } from './routes/servers.js';
 import { sessionsRoutes } from './routes/sessions.js';
 
@@ -33,6 +34,7 @@ app.get('/health', (_req, res) => {
 
 // API routes
 app.use('/api/offices', officesRoutes);
+app.use('/api/payment', paymentRoutes);
 app.use('/api/servers', serverRoutes);
 app.use('/api/servers/:serverId/sessions', sessionsRoutes);
 
@@ -51,6 +53,7 @@ app.listen(PORT, () => {
   console.log(`🚀 Clawmpany server running on http://localhost:${PORT}`);
   console.log(`📡 API endpoints:`);
   console.log(`   - http://localhost:${PORT}/api/offices`);
+  console.log(`   - http://localhost:${PORT}/api/payment/config`);
   console.log(`   - http://localhost:${PORT}/api/servers`);
   console.log(`📦 PocketBase: ${POCKETBASE_URL}`);
 });

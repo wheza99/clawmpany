@@ -129,7 +129,7 @@ function App() {
   // Auth state - require authentication if Privy is configured
   const { ready, authenticated, login } = usePrivy();
   const { loading: authLoading } = useAuth();
-  const { hasOffice, loading: officeLoading, config, server } = useOffice();
+  const { hasOffice, loading: officeLoading, config, server, checkOffice } = useOffice();
   const requireAuth = import.meta.env.VITE_PRIVY_APP_ID ? true : false;
 
   // Track if we've already triggered login to prevent multiple calls
@@ -546,7 +546,13 @@ function App() {
       )}
 
       {/* Purchase Server Modal - shown when user has no active office */}
-      <ServersModal isOpen={showPurchaseModal} />
+      <ServersModal 
+        isOpen={showPurchaseModal} 
+        onPurchaseSuccess={() => {
+          // Refresh office state after successful purchase
+          checkOffice();
+        }}
+      />
     </div>
   );
 }

@@ -1,45 +1,387 @@
 import { Router } from 'express';
+import PocketBase from 'pocketbase';
 
-import { getServerById, getServersByUserId, updateServer } from '../services/database.js';
 import { fetchOpenClawConfig, checkServerConnection } from '../services/ssh.js';
 import { decryptPassword, encryptPassword } from '../utils/crypto.js';
 
 export const serverRoutes = Router();
 
+// PocketBase connection
+const POCKETBASE_URL = process.env.POCKETBASE_URL || 'http://localhost:8090';
+const POCKETBASE_ADMIN_EMAIL = process.env.POCKETBASE_ADMIN_EMAIL || 'admin@example.com';
+const POCKETBASE_ADMIN_PASSWORD = process.env.POCKETBASE_ADMIN_PASSWORD || 'admin123';
+
+// Cache for PocketBase admin client
+let pbAdmin: PocketBase | null = null;
+let adminAuthExpiry = 0;
+
+async function getPbAdminClient(): Promise<PocketBase> {
+  const pb = new PocketBase(POCKETBASE_URL);
+
+  // Check if we need to re-authenticate (token expires after ~1 hour)
+  const now = Date.now();
+  if (!pbAdmin || adminAuthExpiry < now) {
+    console.log('[PocketBase] Authenticating as admin...');
+    try {
+      await pb.admins.authWithPassword(POCKETBASE_ADMIN_EMAIL, POCKETBASE_ADMIN_PASSWORD);
+      pbAdmin = pb;
+      // Set expiry to 50 minutes from now (tokens usually last 1 hour)
+      adminAuthExpiry = now + 50 * 60 * 1000;
+      console.log('[PocketBase] Admin authenticated successfully');
+    } catch (err) {
+      console.error('[PocketBase] Failed to authenticate as admin:', err);
+      throw new Error('PocketBase admin authentication failed');
+    }
+  }
+
+  return pbAdmin;
+}
+
 /**
- * Middleware to extract user ID from request
- * In production, this should validate a JWT token from Supabase Auth
+ * Normalize user ID - strip 'did:privy:' prefix if present
  */
-function getUserId(_req: import('express').Request): string | null {
-  // TODO: Implement proper auth validation
-  // For now, we'll use a header or query param for testing
-  // In production, extract from JWT token in Authorization header
+function normalizeUserId(userId: string): string {
+  const PRIVY_PREFIX = 'did:privy:';
+  if (userId.startsWith(PRIVY_PREFIX)) {
+    return userId.slice(PRIVY_PREFIX.length);
+  }
+  return userId;
+}
+
+/**
+ * Get user ID from request (header or query)
+ */
+function getUserId(req: import('express').Request): string | null {
+  const userIdHeader = req.headers['x-user-id'];
+  if (typeof userIdHeader === 'string' && userIdHeader) {
+    return normalizeUserId(userIdHeader);
+  }
+
+  const userIdQuery = req.query.userId;
+  if (typeof userIdQuery === 'string' && userIdQuery) {
+    return normalizeUserId(userIdQuery);
+  }
+
   return null;
 }
 
 /**
  * GET /api/servers
- * List all servers for the authenticated user
+ * List all servers (admin only - or filtered by user)
  */
 serverRoutes.get('/', async (req, res) => {
   try {
-    const userId = getUserId(req);
+    const pb = await getPbAdminClient();
+    const servers = await pb.collection('server').getFullList({
+      sort: '-created',
+    });
 
-    if (!userId) {
-      // For development: return all servers (remove in production!)
-      if (process.env.NODE_ENV === 'development') {
-        const { getSupabase } = await import('../services/database.js');
-        const { data, error } = await getSupabase().from('servers').select('*');
-        if (error) throw error;
-        return res.json({ success: true, data });
-      }
-      return res.status(401).json({ success: false, error: 'Unauthorized' });
-    }
+    // Remove passwords before sending
+    const safeServers = servers.map(({ password, ...server }) => server);
 
-    const servers = await getServersByUserId(userId);
-    res.json({ success: true, data: servers });
+    res.json({ success: true, data: safeServers });
   } catch (error) {
     console.error('Error fetching servers:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * GET /api/servers/availability
+ * Check how many servers are available for each package
+ */
+serverRoutes.get('/availability', async (req, res) => {
+  try {
+    const pb = await getPbAdminClient();
+    
+    // Define specs for each package type
+    const packageSpecs = {
+      starter: { cpu: 2, ram: 2, storage: 40 },
+      business: { cpu: 2, ram: 4, storage: 60 },
+      enterprise: { cpu: 2, ram: 8, storage: 80 },
+    };
+
+    // Get availability for each package
+    const availability: Record<string, { available: number; spec: { cpu: number; ram: number; storage: number } }> = {};
+    
+    for (const [packageName, spec] of Object.entries(packageSpecs)) {
+      const filter = `status="available" && cpu=${spec.cpu} && ram=${spec.ram} && storage=${spec.storage}`;
+      const servers = await pb.collection('server').getFullList({ filter });
+      
+      availability[packageName] = {
+        available: servers.length,
+        spec,
+      };
+    }
+
+    res.json({
+      success: true,
+      data: {
+        total: Object.values(availability).reduce((sum, pkg) => sum + pkg.available, 0),
+        packages: availability,
+      },
+    });
+  } catch (error) {
+    console.error('Error checking availability:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * POST /api/servers/reserve
+ * Check availability and reserve a server for purchase
+ * Returns reserved server ID or error if no servers available
+ */
+serverRoutes.post('/reserve', async (req, res) => {
+  try {
+    const userId = getUserId(req);
+    const { packageType } = req.body; // 'starter', 'business', 'enterprise'
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized - User ID required',
+      });
+    }
+
+    console.log(`[/api/servers/reserve] User ${userId} reserving ${packageType} office`);
+
+    const pb = await getPbAdminClient();
+
+    // Define specs for each package type
+    const packageSpecs: Record<string, { cpu: number; ram: number; storage: number }> = {
+      starter: { cpu: 2, ram: 2, storage: 40 },
+      business: { cpu: 2, ram: 4, storage: 60 },
+      enterprise: { cpu: 2, ram: 8, storage: 80 },
+    };
+
+    // Get spec for selected package (default to business if not found)
+    const spec = packageSpecs[packageType] || packageSpecs.business;
+
+    // Find an available office matching the package spec
+    // Filter: status=available AND cpu=X AND ram=Y AND storage=Z
+    const filter = `status="available" && cpu=${spec.cpu} && ram=${spec.ram} && storage=${spec.storage}`;
+    
+    console.log(`[/api/servers/reserve] Searching with filter: ${filter}`);
+    
+    const server = await pb.collection('server').getFirstListItem(filter, {
+      sort: 'created', // Get oldest available office
+    }).catch(() => null);
+
+    if (!server) {
+      console.log(`[/api/servers/reserve] No available ${packageType} offices (${spec.cpu} vCPU, ${spec.ram}GB RAM, ${spec.storage}GB)`);
+      return res.status(400).json({
+        success: false,
+        error: `No ${packageType} offices available with those specs. Try a different package or check back later!`,
+        code: 'NO_AVAILABILITY',
+      });
+    }
+
+    console.log(`[/api/servers/reserve] Found office ${server.id}, reserving...`);
+
+    // Update office status to reserved
+    const updatedServer = await pb.collection('server').update(server.id, {
+      status: 'reserved',
+      reserved_by: userId,
+      reserved_at: new Date().toISOString(),
+      package_type: packageType || 'business',
+    });
+
+    console.log(`[/api/servers/reserve] Office ${server.id} reserved for user ${userId}`);
+
+    res.json({
+      success: true,
+      data: {
+        serverId: updatedServer.id,
+        reservedAt: updatedServer.reserved_at,
+        packageType: updatedServer.package_type,
+      },
+    });
+  } catch (error) {
+    console.error('Error reserving server:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * POST /api/servers/confirm-purchase
+ * Confirm purchase after successful payment
+ * Updates server status to occupied and creates office record
+ */
+serverRoutes.post('/confirm-purchase', async (req, res) => {
+  try {
+    const userId = getUserId(req);
+    const { serverId, packageType, paymentMethod, txHash } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized - User ID required',
+      });
+    }
+
+    if (!serverId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Server ID is required',
+      });
+    }
+
+    console.log(`[/api/servers/confirm-purchase] Confirming rental for office ${serverId}, user ${userId}`);
+
+    const pb = await getPbAdminClient();
+
+    // Verify office is reserved by this user
+    const server = await pb.collection('server').getOne(serverId).catch(() => null);
+
+    if (!server) {
+      return res.status(404).json({
+        success: false,
+        error: 'Office not found',
+      });
+    }
+
+    if (server.status !== 'reserved') {
+      return res.status(400).json({
+        success: false,
+        error: 'Office is not reserved',
+        code: 'NOT_RESERVED',
+      });
+    }
+
+    if (server.reserved_by !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Office is reserved by someone else',
+        code: 'NOT_YOUR_RESERVATION',
+      });
+    }
+
+    // Calculate expiry date (30 days from now)
+    const expiredAt = new Date();
+    expiredAt.setDate(expiredAt.getDate() + 30);
+
+    // Update server status to occupied
+    await pb.collection('server').update(serverId, {
+      status: 'occupied',
+      occupied_by: userId,
+      occupied_at: new Date().toISOString(),
+      expired_at: expiredAt.toISOString(),
+      payment_method: paymentMethod,
+      transaction_hash: txHash || null,
+    });
+
+    console.log(`[/api/servers/confirm-purchase] Office ${serverId} marked as occupied`);
+
+    // Create office rental record
+    const office = await pb.collection('office').create({
+      user_id: userId,
+      server_id: serverId,
+      expired_at: expiredAt.toISOString(),
+      package_type: packageType || server.package_type || 'business',
+    });
+
+    console.log(`[/api/servers/confirm-purchase] Rental record ${office.id} created for user ${userId}`);
+
+    res.json({
+      success: true,
+      data: {
+        serverId,
+        officeId: office.id,
+        expiredAt: expiredAt.toISOString(),
+        message: 'Office rental confirmed successfully',
+      },
+    });
+  } catch (error) {
+    console.error('Error confirming purchase:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * POST /api/servers/cancel-reservation
+ * Cancel a server reservation (if payment fails or user cancels)
+ */
+serverRoutes.post('/cancel-reservation', async (req, res) => {
+  try {
+    const userId = getUserId(req);
+    const { serverId } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized - User ID required',
+      });
+    }
+
+    if (!serverId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Server ID is required',
+      });
+    }
+
+    console.log(`[/api/servers/cancel-reservation] Cancelling reservation for office ${serverId}`);
+
+    const pb = await getPbAdminClient();
+
+    // Verify office exists and is reserved
+    const server = await pb.collection('server').getOne(serverId).catch(() => null);
+
+    if (!server) {
+      return res.status(404).json({
+        success: false,
+        error: 'Office not found',
+      });
+    }
+
+    // Only allow cancellation if status is reserved (not already occupied, available, etc.)
+    if (server.status !== 'reserved') {
+      // Already not reserved - return success anyway
+      console.log(`[/api/servers/cancel-reservation] Office ${serverId} is not in reserved state (current: ${server.status})`);
+      return res.json({
+        success: true,
+        message: 'Reservation already released',
+      });
+    }
+
+    // Verify the user is the one who reserved it
+    if (server.reserved_by && server.reserved_by !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Office is reserved by someone else',
+        code: 'NOT_YOUR_RESERVATION',
+      });
+    }
+
+    // Update office status back to available
+    await pb.collection('server').update(serverId, {
+      status: 'available',
+      reserved_by: null,
+      reserved_at: null,
+      package_type: null,
+    });
+
+    console.log(`[/api/servers/cancel-reservation] Office ${serverId} is now available`);
+
+    res.json({
+      success: true,
+      message: 'Reservation cancelled',
+    });
+  } catch (error) {
+    console.error('Error cancelling reservation:', error);
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
@@ -53,15 +395,15 @@ serverRoutes.get('/', async (req, res) => {
  */
 serverRoutes.get('/:id', async (req, res) => {
   try {
-    const userId = getUserId(req);
-    const server = await getServerById(req.params.id, userId ?? undefined);
+    const pb = await getPbAdminClient();
+    const server = await pb.collection('server').getOne(req.params.id).catch(() => null);
 
     if (!server) {
       return res.status(404).json({ success: false, error: 'Server not found' });
     }
 
-    // Remove sensitive data before sending
-    const { password_encrypted, ...safeServer } = server;
+    // Remove password before sending
+    const { password, ...safeServer } = server;
     res.json({ success: true, data: safeServer });
   } catch (error) {
     console.error('Error fetching server:', error);
@@ -78,28 +420,23 @@ serverRoutes.get('/:id', async (req, res) => {
  */
 serverRoutes.get('/:id/config', async (req, res) => {
   try {
-    const userId = getUserId(req);
-    const server = await getServerById(req.params.id, userId ?? undefined);
+    const pb = await getPbAdminClient();
+    const server = await pb.collection('server').getOne(req.params.id).catch(() => null);
 
     if (!server) {
       return res.status(404).json({ success: false, error: 'Server not found' });
     }
 
-    if (!server.public_ip) {
-      return res.status(400).json({ success: false, error: 'Server has no public IP' });
+    if (!server.ip) {
+      return res.status(400).json({ success: false, error: 'Server has no IP configured' });
     }
 
-    if (!server.password_encrypted) {
+    if (!server.password) {
       return res.status(400).json({ success: false, error: 'Server has no password configured' });
     }
 
-    // Decrypt password
-    const password = decryptPassword(server.password_encrypted);
-    const sshUser = server.ssh_user ?? 'root';
-    const sshPort = server.ssh_port ?? 22;
-
     // Fetch OpenClaw config
-    const config = await fetchOpenClawConfig(server.public_ip, password, sshUser, sshPort);
+    const config = await fetchOpenClawConfig(server.ip, server.password, server.username || 'root');
 
     res.json({ success: true, data: config });
   } catch (error) {
@@ -117,87 +454,34 @@ serverRoutes.get('/:id/config', async (req, res) => {
  */
 serverRoutes.get('/:id/test', async (req, res) => {
   try {
-    const userId = getUserId(req);
-    const server = await getServerById(req.params.id, userId ?? undefined);
+    const pb = await getPbAdminClient();
+    const server = await pb.collection('server').getOne(req.params.id).catch(() => null);
 
     if (!server) {
       return res.status(404).json({ success: false, error: 'Server not found' });
     }
 
-    if (!server.public_ip) {
-      return res.status(400).json({ success: false, error: 'Server has no public IP' });
+    if (!server.ip) {
+      return res.status(400).json({ success: false, error: 'Server has no IP configured' });
     }
 
-    if (!server.password_encrypted) {
+    if (!server.password) {
       return res.status(400).json({ success: false, error: 'Server has no password configured' });
     }
 
-    // Decrypt password
-    const password = decryptPassword(server.password_encrypted);
-    const sshUser = server.ssh_user ?? 'root';
-    const sshPort = server.ssh_port ?? 22;
-
     // Test connection
-    const isConnected = await checkServerConnection(server.public_ip, password, sshUser, sshPort);
+    const isConnected = await checkServerConnection(server.ip, server.password, server.username || 'root');
 
     res.json({
       success: true,
       data: {
         connected: isConnected,
-        host: server.public_ip,
-        port: sshPort,
-        user: sshUser,
+        host: server.ip,
+        user: server.username || 'root',
       },
     });
   } catch (error) {
     console.error('Error testing server connection:', error);
-    res.status(500).json({
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    });
-  }
-});
-
-/**
- * POST /api/servers/:id/execute
- * Execute a command on a server via SSH
- * (Optional - for future use)
- */
-serverRoutes.post('/:id/execute', async (req, res) => {
-  try {
-    const { command } = req.body;
-
-    if (!command || typeof command !== 'string') {
-      return res.status(400).json({ success: false, error: 'Command is required' });
-    }
-
-    const userId = getUserId(req);
-    const server = await getServerById(req.params.id, userId ?? undefined);
-
-    if (!server) {
-      return res.status(404).json({ success: false, error: 'Server not found' });
-    }
-
-    if (!server.public_ip) {
-      return res.status(400).json({ success: false, error: 'Server has no public IP' });
-    }
-
-    if (!server.password_encrypted) {
-      return res.status(400).json({ success: false, error: 'Server has no password configured' });
-    }
-
-    // Decrypt password
-    const password = decryptPassword(server.password_encrypted);
-    const sshUser = server.ssh_user ?? 'root';
-    const sshPort = server.ssh_port ?? 22;
-
-    // Execute command
-    const { executeRemoteCommand } = await import('../services/ssh.js');
-    const output = await executeRemoteCommand(server.public_ip, password, command, sshUser, sshPort);
-
-    res.json({ success: true, data: { output } });
-  } catch (error) {
-    console.error('Error executing command:', error);
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
@@ -218,8 +502,8 @@ serverRoutes.put('/:id/password', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Password is required' });
     }
 
-    const userId = getUserId(req);
-    const server = await getServerById(req.params.id, userId ?? undefined);
+    const pb = await getPbAdminClient();
+    const server = await pb.collection('server').getOne(req.params.id).catch(() => null);
 
     if (!server) {
       return res.status(404).json({ success: false, error: 'Server not found' });
@@ -229,17 +513,15 @@ serverRoutes.put('/:id/password', async (req, res) => {
     const encryptedPassword = encryptPassword(password);
 
     // Update server with encrypted password
-    await updateServer(server.id, {
-      password_encrypted: encryptedPassword,
-      password_key_version: 1,
-    }, userId ?? undefined);
+    await pb.collection('server').update(server.id, {
+      password: encryptedPassword,
+    });
 
     res.json({
       success: true,
-      message: `Password updated for server "${server.name}"`,
+      message: `Password updated for server "${server.username || server.id}"`,
       data: {
         id: server.id,
-        name: server.name,
         password_set: true,
       },
     });

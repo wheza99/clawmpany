@@ -1,11 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { usePrivy, useWallets } from '@privy-io/react-auth';
 
 interface ServersModalProps {
   isOpen: boolean;
   onClose?: () => void;
+  onPurchaseSuccess?: () => void;
 }
 
-interface ServerPackage {
+interface OfficePackage {
   id: string;
   name: string;
   emoji: string;
@@ -14,46 +16,145 @@ interface ServerPackage {
   cpu: number;
   ram: number;
   storage: number;
+  priceUsdc: number;
+  priceRupiah: number;
 }
 
-const SERVER_PACKAGES: ServerPackage[] = [
+const OFFICE_PACKAGES: OfficePackage[] = [
   {
     id: 'starter',
-    name: 'Starter',
+    name: 'Cozy Studio',
     emoji: '🏠',
-    size: '25 sqm',
+    size: '25 m²',
     employees: 5,
     cpu: 2,
     ram: 2,
     storage: 40,
+    priceUsdc: 10,
+    priceRupiah: 120000,
   },
   {
     id: 'business',
-    name: 'Business',
+    name: 'Business Suite',
     emoji: '🏢',
-    size: '100 sqm',
+    size: '100 m²',
     employees: 10,
     cpu: 2,
     ram: 4,
     storage: 60,
+    priceUsdc: 20,
+    priceRupiah: 180000,
   },
   {
     id: 'enterprise',
-    name: 'Enterprise',
+    name: 'Executive Tower',
     emoji: '🏛️',
-    size: '400 sqm',
+    size: '400 m²',
     employees: 20,
     cpu: 2,
     ram: 8,
     storage: 80,
+    priceUsdc: 40,
+    priceRupiah: 300000,
   },
 ];
 
-export function ServersModal({ isOpen, onClose }: ServersModalProps) {
+// Payment recipient address from env
+const PAYMENT_RECIPIENT_ADDRESS = import.meta.env.VITE_PAYMENT_RECIPIENT_ADDRESS || '0x0000000000000000000000000000000000000000';
+const BASE_CHAIN_ID = '0x2105'; // Base mainnet
+const USDC_CONTRACT = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+
+// API base URL
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+
+type PaymentStep = 'select' | 'checking' | 'reserving' | 'paying' | 'confirming' | 'success' | 'error';
+
+interface ReservedOffice {
+  serverId: string;
+  reservedAt: string;
+  packageType: string;
+}
+
+export function ServersModal({ isOpen, onClose, onPurchaseSuccess }: ServersModalProps) {
+  const { authenticated, user: privyUser } = usePrivy();
+  const { wallets } = useWallets();
+
   const [hovered, setHovered] = useState<string | null>(null);
-  const [selectedPackage, setSelectedPackage] = useState<string>('business'); // Default to Business
+  const [selectedPackage, setSelectedPackage] = useState<string>('business');
+  const [showPaymentDialog, setShowPaymentDialog] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<'usdc' | 'rupiah' | null>(null);
+  const [paymentStep, setPaymentStep] = useState<PaymentStep>('select');
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [usdcBalance, setUsdcBalance] = useState<number>(0);
+  const [isCheckingBalance, setIsCheckingBalance] = useState(false);
+  const [reservedOffice, setReservedOffice] = useState<ReservedOffice | null>(null);
+
+  // Ref to track reserved server ID for cleanup (survives state clears)
+  const reservedServerIdRef = useRef<string | null>(null);
+  // Ref to track if we should cancel reservation on unmount
+  const shouldCancelReservation = useRef(false);
+
+  const selectedPkg = OFFICE_PACKAGES.find((p) => p.id === selectedPackage);
+  const evmWallet = wallets.find((w) => w.chainId?.startsWith('eip155'));
+
+  // Cleanup: Cancel reservation only when modal closes without completing payment
+  useEffect(() => {
+    // Mark that we should cancel if component unmounts and payment wasn't successful
+    // Use ref since it persists through state changes
+    if ((reservedOffice || reservedServerIdRef.current) && paymentStep !== 'success') {
+      shouldCancelReservation.current = true;
+    } else {
+      shouldCancelReservation.current = false;
+    }
+  }, [reservedOffice, paymentStep]);
+
+  // Cancel reservation on actual unmount (modal closing)
+  useEffect(() => {
+    return () => {
+      // Use ref for server ID since state might be stale in cleanup
+      const serverId = reservedServerIdRef.current;
+      const userId = privyUser?.id;
+      
+      if (shouldCancelReservation.current && serverId && userId) {
+        console.log('[Cleanup] Canceling reservation on unmount:', serverId);
+        fetch(`${API_BASE_URL}/api/servers/cancel-reservation`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-user-id': userId,
+          },
+          body: JSON.stringify({ serverId }),
+        }).catch((err) => {
+          console.error('Failed to cancel reservation on cleanup:', err);
+        });
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty deps - only run on actual unmount
 
   if (!isOpen) return null;
+
+  // Fetch USDC balance
+  const fetchUsdcBalance = async (): Promise<number> => {
+    if (!evmWallet) return 0;
+
+    try {
+      const provider = await evmWallet.getEthereumProvider();
+      const paddedAddress = evmWallet.address.slice(2).padStart(64, '0');
+      const data = `0x70a08231${paddedAddress}`;
+
+      const result = await provider.request({
+        method: 'eth_call',
+        params: [{ to: USDC_CONTRACT, data: data }, 'latest'],
+      });
+
+      const balanceInMicroUsdc = parseInt(result, 16);
+      return balanceInMicroUsdc / 1e6;
+    } catch (error) {
+      console.error('Failed to fetch USDC balance:', error);
+      return 0;
+    }
+  };
 
   const handleLater = () => {
     if (onClose) {
@@ -61,12 +162,268 @@ export function ServersModal({ isOpen, onClose }: ServersModalProps) {
     }
   };
 
-  const handlePurchase = () => {
-    const pkg = SERVER_PACKAGES.find((p) => p.id === selectedPackage);
-    if (pkg) {
-      alert(`Purchasing ${pkg.name} package:\n${pkg.size} • ${pkg.employees} employees\n${pkg.cpu} vCPU • ${pkg.ram}GB RAM • ${pkg.storage}GB Storage`);
-      // TODO: Implement actual purchase flow
+  const handlePurchase = async () => {
+    if (!authenticated || !privyUser?.id) {
+      alert('Please login first to rent an office.');
+      return;
     }
+
+    // Cancel any existing reservation first (in case of retry)
+    if (reservedOffice) {
+      console.log('[handlePurchase] Canceling existing reservation before creating new one');
+      await cancelReservation();
+    }
+
+    // Reset state
+    setPaymentStep('checking');
+    setPaymentMethod(null);
+    setPaymentError(null);
+    setReservedOffice(null);
+    reservedServerIdRef.current = null; // Clear ref too
+    setShowPaymentDialog(true);
+
+    // Check availability and reserve office
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/servers/reserve`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-id': privyUser.id,
+        },
+        body: JSON.stringify({
+          packageType: selectedPackage,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        // No offices available - add small delay before showing error
+        setTimeout(() => {
+          setPaymentError(result.error || 'All offices are currently occupied. Please check back later!');
+          setPaymentStep('error');
+        }, 1500);
+        return;
+      }
+
+      // Office reserved successfully - add 2 second delay for smooth UX
+      setReservedOffice(result.data);
+      reservedServerIdRef.current = result.data.serverId; // Store in ref for cleanup
+      setTimeout(() => {
+        setPaymentStep('select');
+      }, 2000);
+    } catch (error) {
+      console.error('Failed to reserve office:', error);
+      setTimeout(() => {
+        setPaymentError('Oops! Something went wrong. Please try again.');
+        setPaymentStep('error');
+      }, 1500);
+    }
+  };
+
+  const handleSelectPaymentMethod = async (method: 'usdc' | 'rupiah') => {
+    setPaymentMethod(method);
+
+    if (method === 'usdc') {
+      // Check USDC balance
+      setIsCheckingBalance(true);
+      const balance = await fetchUsdcBalance();
+      setUsdcBalance(balance);
+      setIsCheckingBalance(false);
+
+      // Check if balance is sufficient
+      if (balance < (selectedPkg?.priceUsdc || 0)) {
+        // Cancel reservation before showing error
+        await cancelReservation();
+        setPaymentError(`Not enough USDC. You have ${balance.toFixed(2)} USDC, need ${selectedPkg?.priceUsdc} USDC.`);
+        setPaymentStep('error');
+        return;
+      }
+    } else if (method === 'rupiah') {
+      // Rupiah not available yet - cancel reservation and show error
+      await cancelReservation();
+      setPaymentError('Rupiah payment coming soon! Please use USDC for now.');
+      setPaymentStep('error');
+      return;
+    }
+
+    setPaymentStep('paying');
+  };
+
+  const handleConfirmPayment = async () => {
+    if (!evmWallet || !selectedPkg || !reservedOffice) return;
+
+    if (paymentMethod === 'usdc') {
+      try {
+        setPaymentStep('paying');
+        setPaymentError(null);
+
+        const provider = await evmWallet.getEthereumProvider();
+
+        // Switch to Base network if needed
+        try {
+          const currentChainId = await provider.request({ method: 'eth_chainId' });
+          if (currentChainId !== BASE_CHAIN_ID) {
+            await provider.request({
+              method: 'wallet_switchEthereumChain',
+              params: [{ chainId: BASE_CHAIN_ID }],
+            });
+          }
+        } catch (switchError) {
+          console.warn('Chain switch warning:', switchError);
+        }
+
+        // Convert USDC amount to microUSDC (6 decimals)
+        const amountInMicroUsdc = BigInt(Math.floor(selectedPkg.priceUsdc * 1e6));
+
+        // Pad address to 32 bytes
+        const recipientPadded = PAYMENT_RECIPIENT_ADDRESS.slice(2).padStart(64, '0');
+        const amountPadded = amountInMicroUsdc.toString(16).padStart(64, '0');
+
+        // ERC-20 transfer function signature
+        const transferData = `0xa9059cbb${recipientPadded}${amountPadded}`;
+
+        // Request transaction
+        const hash = await provider.request({
+          method: 'eth_sendTransaction',
+          params: [{
+            from: evmWallet.address,
+            to: USDC_CONTRACT,
+            data: transferData,
+          }],
+        });
+
+        console.log('Transaction sent:', hash);
+        setPaymentStep('confirming');
+
+        // Confirm purchase with backend
+        const confirmResponse = await fetch(`${API_BASE_URL}/api/servers/confirm-purchase`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-user-id': privyUser?.id || '',
+          },
+          body: JSON.stringify({
+            serverId: reservedOffice.serverId,
+            packageType: selectedPackage,
+            paymentMethod: 'usdc',
+            txHash: hash,
+          }),
+        });
+
+        const confirmResult = await confirmResponse.json();
+
+        if (!confirmResponse.ok || !confirmResult.success) {
+          throw new Error(confirmResult.error || 'Failed to confirm booking');
+        }
+
+        console.log('Purchase confirmed:', confirmResult);
+        
+        // Add small delay before showing success for smooth UX
+        setTimeout(() => {
+          setPaymentStep('success');
+        }, 1500);
+      } catch (error: any) {
+        console.error('Payment failed:', error);
+
+        // Cancel reservation
+        await cancelReservation();
+
+        setPaymentError(error.message || 'Payment was cancelled or failed');
+        setPaymentStep('error');
+      }
+    } else if (paymentMethod === 'rupiah') {
+      // Rupiah not implemented yet - this shouldn't happen but just in case
+      await cancelReservation();
+      setPaymentError('Rupiah payment coming soon! Please use USDC for now.');
+      setPaymentStep('error');
+    }
+  };
+
+  const cancelReservation = async () => {
+    // Use ref as backup if state is cleared
+    const serverIdToCancel = reservedOffice?.serverId || reservedServerIdRef.current;
+    if (!serverIdToCancel || !privyUser?.id) return false;
+
+    try {
+      console.log('[cancelReservation] Canceling reservation for server:', serverIdToCancel);
+      
+      const response = await fetch(`${API_BASE_URL}/api/servers/cancel-reservation`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-id': privyUser.id,
+        },
+        body: JSON.stringify({
+          serverId: serverIdToCancel,
+        }),
+      });
+      
+      const result = await response.json();
+      
+      if (response.ok && result.success) {
+        console.log('[cancelReservation] Reservation cancelled successfully');
+        setReservedOffice(null); // Clear reserved office state
+        reservedServerIdRef.current = null; // Clear ref too
+        shouldCancelReservation.current = false; // Don't try to cancel again on unmount
+        return true;
+      } else {
+        console.error('[cancelReservation] Failed to cancel:', result.error);
+        return false;
+      }
+    } catch (error) {
+      console.error('[cancelReservation] Error:', error);
+      return false;
+    }
+  };
+
+  const handleClosePaymentDialog = async () => {
+    // Cancel reservation if we have one and payment wasn't successful
+    if (reservedOffice && paymentStep !== 'success') {
+      await cancelReservation();
+    }
+
+    if (paymentStep === 'success') {
+      setShowPaymentDialog(false);
+      if (onPurchaseSuccess) {
+        onPurchaseSuccess();
+      }
+      if (onClose) {
+        onClose();
+      }
+    } else {
+      setShowPaymentDialog(false);
+      setPaymentStep('select');
+      setPaymentMethod(null);
+      setPaymentError(null);
+    }
+  };
+
+  const handleBackFromPayment = async () => {
+    // User wants to go back from payment - cancel reservation and restart flow
+    if (reservedOffice || reservedServerIdRef.current) {
+      await cancelReservation();
+    }
+    
+    // Reset to checking state to re-reserve if user wants to try again
+    setPaymentStep('select');
+    setPaymentMethod(null);
+  };
+
+  const handleCancelFromSelect = async () => {
+    // User clicked Cancel from select payment method - cancel reservation
+    if (reservedOffice || reservedServerIdRef.current) {
+      await cancelReservation();
+    }
+    
+    setShowPaymentDialog(false);
+    setPaymentStep('select');
+    setPaymentMethod(null);
+    setPaymentError(null);
+  };
+
+  const formatRupiah = (num: number): string => {
+    return num.toLocaleString('id-ID');
   };
 
   return (
@@ -114,13 +471,13 @@ export function ServersModal({ isOpen, onClose }: ServersModalProps) {
           }}
         >
           <span style={{ fontSize: '26px', color: '#4ECDC4', fontWeight: 'bold' }}>
-            🏢 Welcome to Clawmpany!
+            🏢 Rent Your Office Space
           </span>
         </div>
 
         {/* Content */}
         <div style={{ padding: '16px 16px', textAlign: 'center' }}>
-          <div style={{ fontSize: '64px', marginBottom: '16px' }}>🖥️</div>
+          <div style={{ fontSize: '64px', marginBottom: '16px' }}>🏗️</div>
           <div
             style={{
               fontSize: '24px',
@@ -139,7 +496,7 @@ export function ServersModal({ isOpen, onClose }: ServersModalProps) {
               marginBottom: '8px',
             }}
           >
-            You don't have an active office yet.
+            You don't have an office space yet.
           </div>
           <div
             style={{
@@ -149,10 +506,10 @@ export function ServersModal({ isOpen, onClose }: ServersModalProps) {
               marginBottom: '16px',
             }}
           >
-            Choose a server package to get started!
+            Pick a space that fits your team!
           </div>
 
-          {/* Server packages */}
+          {/* Office packages */}
           <div
             style={{
               display: 'flex',
@@ -161,7 +518,7 @@ export function ServersModal({ isOpen, onClose }: ServersModalProps) {
               marginBottom: '20px',
             }}
           >
-            {SERVER_PACKAGES.map((pkg) => {
+            {OFFICE_PACKAGES.map((pkg) => {
               const isSelected = selectedPackage === pkg.id;
               const isHovered = hovered === pkg.id;
 
@@ -194,7 +551,7 @@ export function ServersModal({ isOpen, onClose }: ServersModalProps) {
                   <div style={{ fontSize: '24px', marginBottom: '4px' }}>{pkg.emoji}</div>
                   <div
                     style={{
-                      fontSize: '14px',
+                      fontSize: '13px',
                       color: isSelected ? '#4ECDC4' : 'rgba(255, 255, 255, 0.7)',
                       fontWeight: 'bold',
                     }}
@@ -208,7 +565,7 @@ export function ServersModal({ isOpen, onClose }: ServersModalProps) {
                       marginTop: 4,
                     }}
                   >
-                    {pkg.size} • {pkg.employees} emp
+                    {pkg.size}
                   </div>
                   <div
                     style={{
@@ -217,14 +574,34 @@ export function ServersModal({ isOpen, onClose }: ServersModalProps) {
                       marginTop: 2,
                     }}
                   >
-                    {pkg.cpu} vCPU • {pkg.ram}GB • {pkg.storage}GB
+                    Up to {pkg.employees} employees
+                  </div>
+                  {/* Price */}
+                  <div
+                    style={{
+                      fontSize: '13px',
+                      color: '#4ECDC4',
+                      marginTop: 6,
+                      fontWeight: 'bold',
+                    }}
+                  >
+                    ${pkg.priceUsdc} / Rp{formatRupiah(pkg.priceRupiah)}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: '10px',
+                      color: 'rgba(255, 255, 255, 0.4)',
+                      marginTop: 2,
+                    }}
+                  >
+                    /month
                   </div>
                   {isSelected && (
                     <div
                       style={{
                         fontSize: '10px',
                         color: '#4ECDC4',
-                        marginTop: 6,
+                        marginTop: 4,
                         fontWeight: 'bold',
                       }}
                     >
@@ -279,10 +656,448 @@ export function ServersModal({ isOpen, onClose }: ServersModalProps) {
               fontWeight: 'bold',
             }}
           >
-            Purchase Server
+            Rent Office
           </button>
         </div>
       </div>
+
+      {/* Payment Dialog */}
+      {showPaymentDialog && selectedPkg && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              background: 'rgba(0, 0, 0, 0.8)',
+            }}
+            onClick={paymentStep !== 'checking' && paymentStep !== 'reserving' && paymentStep !== 'paying' && paymentStep !== 'confirming' ? handleClosePaymentDialog : undefined}
+          />
+
+          <div
+            style={{
+              position: 'relative',
+              background: 'var(--pixel-bg)',
+              border: '4px solid var(--pixel-border)',
+              borderRadius: 0,
+              padding: '24px 32px',
+              width: '420px',
+              maxWidth: '90vw',
+              boxShadow: '8px 8px 0 rgba(0, 0, 0, 0.5)',
+              zIndex: 1001,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Step: Checking availability */}
+            {paymentStep === 'checking' && (
+              <>
+                <div style={{ textAlign: 'center', marginBottom: 24 }}>
+                  <div
+                    style={{
+                      fontSize: '48px',
+                      animation: 'pulse 1.5s ease-in-out infinite',
+                    }}
+                  >
+                    🏢
+                  </div>
+                  <h2
+                    style={{
+                      fontSize: '24px',
+                      fontWeight: 'bold',
+                      color: 'var(--pixel-text)',
+                      marginTop: 16,
+                    }}
+                  >
+                    Finding Your Space...
+                  </h2>
+                  <p style={{ fontSize: '16px', color: 'var(--pixel-text-dim)', marginTop: 8 }}>
+                    Checking availability for <span style={{ color: '#4ECDC4', fontWeight: 'bold' }}>{selectedPkg?.name}</span>
+                  </p>
+                </div>
+
+                <style>{`
+                  @keyframes pulse {
+                    0%, 100% { transform: scale(1); opacity: 1; }
+                    50% { transform: scale(1.1); opacity: 0.8; }
+                  }
+                `}</style>
+              </>
+            )}
+
+            {/* Step: Select Payment Method */}
+            {paymentStep === 'select' && reservedOffice && (
+              <>
+                <div style={{ textAlign: 'center', marginBottom: 24 }}>
+                  <span style={{ fontSize: '48px' }}>{selectedPkg.emoji}</span>
+                  <h2
+                    style={{
+                      fontSize: '24px',
+                      fontWeight: 'bold',
+                      color: '#4ECDC4',
+                      marginTop: 8,
+                    }}
+                  >
+                    {selectedPkg.name}
+                  </h2>
+                  <p style={{ fontSize: '18px', color: 'var(--pixel-text)', marginTop: 4 }}>
+                    {selectedPkg.size} • Up to {selectedPkg.employees} employees
+                  </p>
+                  <div
+                    style={{
+                      marginTop: 12,
+                      padding: '8px 12px',
+                      background: 'rgba(34, 197, 94, 0.1)',
+                      border: '1px solid rgba(34, 197, 94, 0.3)',
+                      borderRadius: 4,
+                      display: 'inline-block',
+                    }}
+                  >
+                    <span style={{ fontSize: '12px', color: '#22c55e' }}>
+                      ✓ Office reserved for you
+                    </span>
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 24 }}>
+                  <p style={{ fontSize: '16px', color: 'var(--pixel-text)', textAlign: 'center', marginBottom: 16 }}>
+                    How would you like to pay?
+                  </p>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    {/* USDC Option */}
+                    <button
+                      onClick={() => handleSelectPaymentMethod('usdc')}
+                      disabled={!evmWallet}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 16,
+                        padding: '16px',
+                        background: evmWallet ? 'rgba(45, 212, 191, 0.1)' : 'rgba(100, 100, 100, 0.1)',
+                        border: '2px solid',
+                        borderColor: evmWallet ? '#2dd4bf' : 'rgba(100, 100, 100, 0.3)',
+                        borderRadius: 4,
+                        cursor: evmWallet ? 'pointer' : 'not-allowed',
+                        opacity: evmWallet ? 1 : 0.5,
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 40,
+                          height: 40,
+                          borderRadius: '50%',
+                          background: 'linear-gradient(135deg, #2dd4bf 0%, #14b8a6 50%, #0d9488 100%)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '20px',
+                          fontWeight: 'bold',
+                          color: '#fff',
+                          flexShrink: 0,
+                        }}
+                      >
+                        $
+                      </div>
+                      <div style={{ flex: 1, textAlign: 'left' }}>
+                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: evmWallet ? '#2dd4bf' : 'var(--pixel-text-dim)' }}>
+                          Pay with USDC
+                        </div>
+                        <div style={{ fontSize: '14px', color: 'var(--pixel-text-dim)' }}>
+                          ${selectedPkg.priceUsdc} USDC on Base
+                        </div>
+                      </div>
+                      {!evmWallet && (
+                        <span style={{ fontSize: '12px', color: '#ef4444' }}>No wallet</span>
+                      )}
+                    </button>
+
+                    {/* Rupiah Option */}
+                    <button
+                      onClick={() => handleSelectPaymentMethod('rupiah')}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 16,
+                        padding: '16px',
+                        background: 'rgba(249, 115, 22, 0.1)',
+                        border: '2px solid #f97316',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        opacity: 0.6,
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 40,
+                          height: 40,
+                          borderRadius: '50%',
+                          background: 'linear-gradient(135deg, #f97316 0%, #ea580c 50%, #c2410c 100%)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '14px',
+                          fontWeight: 'bold',
+                          color: '#fff',
+                          flexShrink: 0,
+                        }}
+                      >
+                        Rp
+                      </div>
+                      <div style={{ flex: 1, textAlign: 'left' }}>
+                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#f97316' }}>
+                          Pay with Rupiah
+                        </div>
+                        <div style={{ fontSize: '14px', color: 'var(--pixel-text-dim)' }}>
+                          Rp {formatRupiah(selectedPkg.priceRupiah)}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: '12px', color: '#fbbf24', background: 'rgba(251, 191, 36, 0.2)', padding: '4px 8px', borderRadius: 4 }}>
+                        Coming Soon
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleCancelFromSelect}
+                  style={{
+                    width: '100%',
+                    padding: '10px 16px',
+                    fontSize: '18px',
+                    background: 'transparent',
+                    color: 'var(--pixel-text-dim)',
+                    border: '2px solid var(--pixel-border)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel
+                </button>
+              </>
+            )}
+
+            {/* Step: Paying / Confirming */}
+            {paymentStep === 'paying' && paymentMethod && (
+              <>
+                <div style={{ textAlign: 'center', marginBottom: 24 }}>
+                  <span style={{ fontSize: '48px' }}>
+                    {paymentMethod === 'usdc' ? '💰' : '💵'}
+                  </span>
+                  <h2
+                    style={{
+                      fontSize: '24px',
+                      fontWeight: 'bold',
+                      color: 'var(--pixel-text)',
+                      marginTop: 8,
+                    }}
+                  >
+                    Confirm Payment
+                  </h2>
+                  <p style={{ fontSize: '18px', color: 'var(--pixel-text-dim)', marginTop: 8 }}>
+                    One month rent for {selectedPkg.name}:
+                  </p>
+                  <div
+                    style={{
+                      fontSize: '32px',
+                      fontWeight: 'bold',
+                      color: paymentMethod === 'usdc' ? '#2dd4bf' : '#f97316',
+                      marginTop: 8,
+                    }}
+                  >
+                    {paymentMethod === 'usdc' ? `$${selectedPkg.priceUsdc} USDC` : `Rp ${formatRupiah(selectedPkg.priceRupiah)}`}
+                  </div>
+                  {paymentMethod === 'usdc' && (
+                    <p style={{ fontSize: '14px', color: 'var(--pixel-text-dim)', marginTop: 8 }}>
+                      Your balance: {isCheckingBalance ? '...' : `${usdcBalance.toFixed(2)} USDC`}
+                    </p>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <button
+                    onClick={handleBackFromPayment}
+                    disabled={isCheckingBalance}
+                    style={{
+                      flex: 1,
+                      padding: '12px 16px',
+                      fontSize: '18px',
+                      background: 'transparent',
+                      color: 'var(--pixel-text)',
+                      border: '2px solid var(--pixel-border)',
+                      cursor: 'pointer',
+                      opacity: isCheckingBalance ? 0.5 : 1,
+                    }}
+                  >
+                    Back
+                  </button>
+                  <button
+                    onClick={handleConfirmPayment}
+                    disabled={isCheckingBalance}
+                    style={{
+                      flex: 1,
+                      padding: '12px 16px',
+                      fontSize: '18px',
+                      fontWeight: 'bold',
+                      background: paymentMethod === 'usdc' ? '#2dd4bf' : '#f97316',
+                      color: '#fff',
+                      border: '2px solid transparent',
+                      cursor: 'pointer',
+                      opacity: isCheckingBalance ? 0.5 : 1,
+                    }}
+                  >
+                    Pay Now
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Step: Confirming purchase */}
+            {paymentStep === 'confirming' && (
+              <>
+                <div style={{ textAlign: 'center', marginBottom: 24 }}>
+                  <div
+                    style={{
+                      fontSize: '48px',
+                      animation: 'spin 1s linear infinite',
+                    }}
+                  >
+                    🏠
+                  </div>
+                  <h2
+                    style={{
+                      fontSize: '24px',
+                      fontWeight: 'bold',
+                      color: 'var(--pixel-text)',
+                      marginTop: 16,
+                    }}
+                  >
+                    Setting Up Your Office...
+                  </h2>
+                  <p style={{ fontSize: '14px', color: 'var(--pixel-text-dim)', marginTop: 8 }}>
+                    Preparing the keys to your new workspace!
+                  </p>
+                </div>
+
+                <style>{`
+                  @keyframes spin {
+                    from { transform: rotate(0deg); }
+                    to { transform: rotate(360deg); }
+                  }
+                `}</style>
+              </>
+            )}
+
+            {/* Step: Success */}
+            {paymentStep === 'success' && (
+              <>
+                <div style={{ textAlign: 'center', marginBottom: 24 }}>
+                  <span style={{ fontSize: '64px' }}>🎉</span>
+                  <h2
+                    style={{
+                      fontSize: '28px',
+                      fontWeight: 'bold',
+                      color: '#22c55e',
+                      marginTop: 16,
+                    }}
+                  >
+                    You're All Set!
+                  </h2>
+                  <p style={{ fontSize: '18px', color: 'var(--pixel-text)', marginTop: 8 }}>
+                    Your {selectedPkg.name} is ready!
+                  </p>
+                  <p style={{ fontSize: '14px', color: 'var(--pixel-text-dim)', marginTop: 8 }}>
+                    Rent is valid for 30 days. Time to get to work! 💼
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleClosePaymentDialog}
+                  style={{
+                    width: '100%',
+                    padding: '12px 16px',
+                    fontSize: '18px',
+                    fontWeight: 'bold',
+                    background: '#22c55e',
+                    color: '#fff',
+                    border: '2px solid transparent',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Enter My Office
+                </button>
+              </>
+            )}
+
+            {/* Step: Error */}
+            {paymentStep === 'error' && (
+              <>
+                <div style={{ textAlign: 'center', marginBottom: 24 }}>
+                  <span style={{ fontSize: '64px' }}>😕</span>
+                  <h2
+                    style={{
+                      fontSize: '28px',
+                      fontWeight: 'bold',
+                      color: '#ef4444',
+                      marginTop: 16,
+                    }}
+                  >
+                    {paymentError?.includes('No') && paymentError?.includes('available') ? `${selectedPkg?.name} Unavailable` : 
+                     paymentError?.includes('Insufficient') || paymentError?.includes('Not enough') ? 'Insufficient Balance' :
+                     'Payment Failed'}
+                  </h2>
+                  <p style={{ fontSize: '16px', color: 'var(--pixel-text)', marginTop: 8 }}>
+                    {paymentError?.includes('No') && paymentError?.includes('available')
+                      ? `No ${selectedPkg?.name} offices available right now. Try another package or check back soon!`
+                      : paymentError?.includes('Insufficient') || paymentError?.includes('Not enough')
+                      ? 'Top up your USDC balance and try again.'
+                      : paymentError || 'Something went wrong. Please try again.'}
+                  </p>
+                </div>
+
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <button
+                    onClick={handleClosePaymentDialog}
+                    style={{
+                      flex: 1,
+                      padding: '12px 16px',
+                      fontSize: '18px',
+                      background: 'transparent',
+                      color: 'var(--pixel-text)',
+                      border: '2px solid var(--pixel-border)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Close
+                  </button>
+                  {!(paymentError?.includes('No') && paymentError?.includes('available')) && (
+                    <button
+                      onClick={handlePurchase}
+                      style={{
+                        flex: 1,
+                        padding: '12px 16px',
+                        fontSize: '18px',
+                        background: '#4ECDC4',
+                        color: '#fff',
+                        border: '2px solid transparent',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Try Again
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 }

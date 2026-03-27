@@ -7,7 +7,6 @@ import { useServerState } from '../hooks/useServerState.js';
 import type { WorkspaceFolder } from '../hooks/useExtensionMessages.js';
 import { ServerPasswordModal } from './ServerPasswordModal.js';
 import { ServersModal } from './ServersModal.js';
-import { SettingsModal } from './SettingsModal.js';
 
 interface BottomToolbarProps {
   isEditMode: boolean;
@@ -44,23 +43,16 @@ const btnBase: React.CSSProperties = {
   cursor: 'pointer',
 };
 
-const btnActive: React.CSSProperties = {
-  ...btnBase,
-  background: 'var(--pixel-active-bg)',
-  border: '2px solid var(--pixel-accent)',
-};
-
 export function BottomToolbar({
   isEditMode: _isEditMode,
   onOpenClaude: _onOpenClaude,
   onToggleEditMode: _onToggleEditMode,
-  isDebugMode,
-  onToggleDebugMode,
+  isDebugMode: _isDebugMode,
+  onToggleDebugMode: _onToggleDebugMode,
   workspaceFolders: _workspaceFolders,
   getOfficeState,
 }: BottomToolbarProps) {
   const [hovered, setHovered] = useState<string | null>(null);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isServersDropdownOpen, setIsServersDropdownOpen] = useState(false);
   const [isCreateServerOpen, setIsCreateServerOpen] = useState(false);
   const [hoveredServer, setHoveredServer] = useState<string | null>(null);
@@ -323,32 +315,6 @@ export function BottomToolbar({
 
       {/* Create Server Dialog */}
       <ServersModal isOpen={isCreateServerOpen} onClose={() => setIsCreateServerOpen(false)} />
-
-      <div style={{ position: 'relative' }}>
-        <button
-          onClick={() => setIsSettingsOpen((v) => !v)}
-          onMouseEnter={() => setHovered('settings')}
-          onMouseLeave={() => setHovered(null)}
-          style={
-            isSettingsOpen
-              ? { ...btnActive }
-              : {
-                  ...btnBase,
-                  background:
-                    hovered === 'settings' ? 'var(--pixel-btn-hover-bg)' : btnBase.background,
-                }
-          }
-          title="Settings"
-        >
-          Settings
-        </button>
-        <SettingsModal
-          isOpen={isSettingsOpen}
-          onClose={() => setIsSettingsOpen(false)}
-          isDebugMode={isDebugMode}
-          onToggleDebugMode={onToggleDebugMode}
-        />
-      </div>
     </div>
   );
 }

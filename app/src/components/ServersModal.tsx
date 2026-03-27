@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePrivy, useWallets } from '@privy-io/react-auth';
 
 interface ServersModalProps {

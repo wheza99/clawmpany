@@ -2,6 +2,7 @@ import { Router } from 'express';
 import PocketBase from 'pocketbase';
 
 import { fetchOpenClawConfig, checkServerConnection } from '../services/ssh.js';
+import { sessionsRoutes } from './sessions.js';
 
 export const serverRoutes = Router();
 
@@ -572,3 +573,6 @@ serverRoutes.put('/:id/password', async (req, res) => {
     });
   }
 });
+
+// Nested sessions routes under /api/servers/:id/sessions
+serverRoutes.use('/:id/sessions', sessionsRoutes);

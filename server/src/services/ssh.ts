@@ -368,8 +368,127 @@ export async function fetchSessionHistory(
 }
 
 /**
+ * Find the openclaw CLI path on remote server
+ */
+async function findOpenClawPath(
+  host: string,
+  password: string,
+  username: string = DEFAULT_SSH_USER,
+  port: number = DEFAULT_SSH_PORT,
+): Promise<{ command: string; error?: string }> {
+  // Try common locations
+  const possiblePaths = [
+    'openclaw', // In PATH
+    '/usr/local/bin/openclaw',
+    '/root/.npm-global/bin/openclaw',
+    '/usr/bin/openclaw',
+    '/home/.npm-global/bin/openclaw',
+    '/usr/local/node/bin/openclaw',
+  ];
+
+  // Common npx locations
+  const npxPaths = [
+    '/usr/local/bin/npx',
+    '/usr/bin/npx',
+    '/root/.npm-global/bin/npx',
+    '/usr/local/node/bin/npx',
+  ];
+
+  let conn: Client | null = null;
+  try {
+    conn = await connectSSH({ host, port, username, password });
+
+    // First, source profile and try to find the CLI
+    const sourceProfile = 'source ~/.bashrc ~/.profile ~/.bash_profile 2>/dev/null || true';
+    
+    // Try which command first with profile sourced
+    try {
+      const whichResult = await executeCommand(conn, `${sourceProfile} && which openclaw 2>/dev/null || command -v openclaw 2>/dev/null`);
+      const path = whichResult.trim();
+      if (path && path.startsWith('/')) {
+        console.log('[SSH] Found openclaw at:', path);
+        return { command: path };
+      }
+    } catch {
+      // Continue to check other paths
+    }
+
+    // Check each possible path
+    for (const path of possiblePaths) {
+      if (path === 'openclaw') continue; // Skip bare command
+      try {
+        await executeCommand(conn, `test -x ${path}`);
+        console.log('[SSH] Found openclaw at:', path);
+        return { command: path };
+      } catch {
+        continue;
+      }
+    }
+
+    // Check if npx is available in common locations
+    for (const npxPath of npxPaths) {
+      try {
+        await executeCommand(conn, `test -x ${npxPath}`);
+        console.log('[SSH] openclaw not found, will use npx at:', npxPath);
+        return { command: `${npxPath} -y openclaw` };
+      } catch {
+        continue;
+      }
+    }
+
+    // Last resort: try to find node/npx with extended search
+    try {
+      const findNode = await executeCommand(conn, `find /usr -name "npx" -type f 2>/dev/null | head -1`);
+      const npxPath = findNode.trim();
+      if (npxPath) {
+        console.log('[SSH] Found npx at:', npxPath);
+        return { command: `${npxPath} -y openclaw` };
+      }
+    } catch {
+      // Not found
+    }
+
+    // Nothing found
+    console.log('[SSH] openclaw and npx not found');
+    return { 
+      command: 'openclaw', 
+      error: 'OpenClaw CLI not found on server. Please ensure OpenClaw is installed and accessible in PATH.' 
+    };
+  } finally {
+    if (conn) conn.end();
+  }
+}
+
+// Cache for openclaw path per host
+const openclawPathCache = new Map<string, { command: string; error?: string }>();
+
+/**
+ * Get openclaw path (cached or discover)
+ */
+async function getOpenClawPath(
+  host: string,
+  password: string,
+  username: string = DEFAULT_SSH_USER,
+  port: number = DEFAULT_SSH_PORT,
+): Promise<{ command: string; error?: string }> {
+  const cacheKey = `${username}@${host}:${port}`;
+  
+  if (openclawPathCache.has(cacheKey)) {
+    return openclawPathCache.get(cacheKey)!;
+  }
+
+  const result = await findOpenClawPath(host, password, username, port);
+  openclawPathCache.set(cacheKey, result);
+  return result;
+}
+
+/**
  * Send a message to an OpenClaw agent and get the response
  * Uses the OpenClaw CLI: openclaw agent --local --agent <agentId> --message "<message>"
+ * 
+ * This approach runs the openclaw CLI directly on the client VPS via SSH,
+ * so the gateway remains loopback-only and is never exposed to the public.
+ * The SSH connection is short-lived (per-request), making it scalable.
  */
 export async function sendMessageToAgent(
   host: string,
@@ -391,13 +510,27 @@ export async function sendMessageToAgent(
     .replace(/\\/g, '\\\\')
     .replace(/'/g, "'\\''");
 
-  // Build the openclaw agent command
-  // Use --session-id to target specific session, --json for structured output
-  // Note: 2>&1 captures both stdout and stderr, we'll parse the JSON from output
-  // Set PATH explicitly to include common npm global locations
-  const command = `export PATH="$PATH:/root/.npm-global/bin:/usr/local/bin:~/.npm-global/bin" && openclaw agent --local --agent '${agentId}' --session-id '${sessionId}' --message '${escapedContent}' --json 2>&1`;
-
   try {
+    // Get the correct openclaw path
+    const openclawResult = await getOpenClawPath(host, password, username, port);
+    
+    // If we already know there's an error, return early
+    if (openclawResult.error) {
+      return {
+        success: false,
+        error: openclawResult.error,
+        sessionId,
+      };
+    }
+    
+    // Build the openclaw agent command
+    // Use --session-id to target specific session, --json for structured output
+    // Note: 2>&1 captures both stdout and stderr, we'll parse the JSON from output
+    // Source profile to ensure PATH includes node/npm locations
+    const sourceProfile = 'source ~/.bashrc ~/.profile ~/.bash_profile 2>/dev/null || true';
+    const command = `${sourceProfile} && ${openclawResult.command} agent --local --agent '${agentId}' --session-id '${sessionId}' --message '${escapedContent}' --json 2>&1`;
+
+    console.log('[SSH] Executing command on', host);
     const output = await executeRemoteCommand(host, password, command, username, port);
 
     // Find the JSON object in the output (skip [tools] and other prefix lines)
@@ -411,12 +544,25 @@ export async function sendMessageToAgent(
       }
 
       // No JSON found - check for errors
-      if (output.includes('error') || output.includes('Error') || output.includes('failed')) {
+      if (output.includes('error') || output.includes('Error') || output.includes('failed') || output.includes('not found')) {
         // Filter out [tools] lines for cleaner error message
         const errorLines = output
           .split('\n')
           .filter((line) => !line.startsWith('[tools]') && line.trim())
           .join('\n');
+        
+        // Check for CLI not found specifically
+        if (output.includes('command not found') || output.includes('not found')) {
+          // Clear cache so we retry discovery next time
+          const cacheKey = `${username}@${host}:${port}`;
+          openclawPathCache.delete(cacheKey);
+          return {
+            success: false,
+            error: 'OpenClaw CLI not found on server. Please ensure OpenClaw is installed correctly.',
+            sessionId,
+          };
+        }
+        
         return {
           success: false,
           error: errorLines || 'Unknown error',
@@ -483,6 +629,94 @@ function parseOpenClawResponse(
       success: false,
       error: 'Failed to parse agent response',
       sessionId,
+    };
+  }
+}
+
+/**
+ * Create a new session for an agent
+ * Sends an initial message to create the session, then returns the session info
+ */
+export async function createNewSession(
+  host: string,
+  password: string,
+  agentId: string = 'main',
+  initialMessage: string = 'Hello',
+  username: string = DEFAULT_SSH_USER,
+  port: number = DEFAULT_SSH_PORT,
+): Promise<{
+  success: boolean;
+  sessionId?: string;
+  response?: string;
+  error?: string;
+}> {
+  // Escape single quotes and special chars for shell safety
+  const escapedContent = initialMessage
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "'\\''");
+
+  try {
+    // Get the correct openclaw path
+    const openclawResult = await getOpenClawPath(host, password, username, port);
+    
+    // If we already know there's an error, return early
+    if (openclawResult.error) {
+      return {
+        success: false,
+        error: openclawResult.error,
+      };
+    }
+    
+    // Build the openclaw agent command WITHOUT session-id to create new session
+    const sourceProfile = 'source ~/.bashrc ~/.profile ~/.bash_profile 2>/dev/null || true';
+    const command = `${sourceProfile} && ${openclawResult.command} agent --local --agent '${agentId}' --message '${escapedContent}' --json 2>&1`;
+
+    console.log('[SSH] Creating new session on', host, 'for agent', agentId);
+    const output = await executeRemoteCommand(host, password, command, username, port);
+
+    // Find the JSON object in the output
+    const jsonStartIndex = output.indexOf('{\n  "payloads"');
+    if (jsonStartIndex === -1) {
+      const altJsonStart = output.indexOf('{"payloads"');
+      if (altJsonStart !== -1) {
+        const jsonStr = output.slice(altJsonStart);
+        return parseOpenClawResponse(jsonStr, '');
+      }
+
+      // No JSON found - check for errors
+      if (output.includes('error') || output.includes('Error') || output.includes('failed') || output.includes('not found')) {
+        const errorLines = output
+          .split('\n')
+          .filter((line) => !line.startsWith('[tools]') && line.trim())
+          .join('\n');
+        
+        if (output.includes('command not found') || output.includes('not found')) {
+          const cacheKey = `${username}@${host}:${port}`;
+          openclawPathCache.delete(cacheKey);
+          return {
+            success: false,
+            error: 'OpenClaw CLI not found on server. Please ensure OpenClaw is installed correctly.',
+          };
+        }
+        
+        return {
+          success: false,
+          error: errorLines || 'Unknown error',
+        };
+      }
+
+      return {
+        success: true,
+        response: output,
+      };
+    }
+
+    const jsonStr = output.slice(jsonStartIndex);
+    return parseOpenClawResponse(jsonStr, '');
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
     };
   }
 }

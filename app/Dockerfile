@@ -8,7 +8,7 @@ WORKDIR /app
 
 # Build-time arguments for environment variables
 ARG VITE_PRIVY_APP_ID
-ARG VITE_API_URL=http://localhost:5173
+ARG VITE_API_URL=https://api.clawmpany.id
 
 # Create .env file for Vite to read during build
 RUN echo "VITE_PRIVY_APP_ID=$VITE_PRIVY_APP_ID" > .env && \
